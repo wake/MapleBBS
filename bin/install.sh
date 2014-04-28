@@ -16,7 +16,7 @@ msg_bmw="水球"
 # 請修改您的作業系統
 # sun linux solaris sol-x86 freebsd bsd
 
-ostype="freebsd"
+ostype="linux"
 
 echo "您所設定的 SCHOOLNAME 是 $schoolname"
 echo "您所設定的 BBSNAME    是 $bbsname"

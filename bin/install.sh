@@ -10,7 +10,7 @@ bbsname2="STRoom.LaPa.BBS"
 sysopnick="拉帕先生"
 tag_valid="LaPaBBS"
 myipaddr="106.187.34.191"
-myhostname="_rt.wake.gs"
+myhostname="rt.wake.gs"
 msg_bmw="水球"
 
 # 請修改您的作業系統

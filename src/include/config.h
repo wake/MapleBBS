@@ -32,7 +32,7 @@
 #define TAG_VALID       "[LaPaBBS]To"   /* 身分認證函 token */
 
 #define MYIPADDR	"106.187.34.191"		/* IP address */
-#define MYHOSTNAME	"_rt.wake.gs"	/* 網路地址 FQDN */
+#define MYHOSTNAME	"rt.wake.gs"	/* 網路地址 FQDN */
 
 #define HOST_ALIASES	{MYHOSTNAME, MYIPADDR, \
 			 "lapa.tw", "lapa.twbbs.org", \

@@ -35,7 +35,7 @@ sun:
 	@$(MAKE) CC=gcc CFLAGS="-O2 -pipe -fomit-frame-pointer -Wunused -I../include" $(SO)
 
 linux:
-	@$(MAKE) CC=gcc CFLAGS="-m32 -DLINUX -O2 -pipe -fomit-frame-pointer -Wunused -I../include" $(SO)
+	@$(MAKE) CC=$(gcc) CFLAGS="-m32 -DLINUX -O2 -pipe -fomit-frame-pointer -Wunused -I../include" $(SO)
 
 solaris:
 	@$(MAKE) CC=gcc CFLAGS="-DSOLARIS -DSYSV -O2 -pipe -fomit-frame-pointer -Wunused -I../include" $(SO)

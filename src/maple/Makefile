@@ -37,7 +37,7 @@ sun:
 	@$(MAKE) CC=gcc CFLAGS="-O2 -pipe -fomit-frame-pointer -Wunused -I../include" LDFLAGS="-s -L../lib -ldao" $(EXE)
 
 linux:
-	@$(MAKE) CC=gcc CFLAGS="-m32 -DLINUX -O2 -pipe -fomit-frame-pointer -Wunused -I../include" LDFLAGS="-m32 -melf_i386 -s -L../lib -ldao -lcrypt -lresolv -ldl -rdynamic" $(EXE)
+	@$(MAKE) CC=$(gcc) CFLAGS="-m32 -DLINUX -O2 -pipe -fomit-frame-pointer -Wunused -I../include" LDFLAGS="-m32 -melf_i386 -s -L../lib -ldao -lcrypt -lresolv -ldl -rdynamic" $(EXE)
 
 solaris:
 	@$(MAKE) CC=gcc CFLAGS="-DSOLARIS -DSYSV -O2 -pipe -fomit-frame-pointer -Wunused -I../include" LDFLAGS="-s -L../lib -ldao -ltermcap -lsocket -lnsl -lresolv -lelf -ldl" $(EXE)

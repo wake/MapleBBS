@@ -14,6 +14,9 @@
 # lib daemon innbbsd maple so game pip util util/backup util/tran util/uno
 
 
+HOME = /home/bbs
+
+
 all:
 	@echo "Please enter 'make sys-type', "
 	@echo " make sun     : for Sun-OS 4.x and maybe some BSD systems, cc or gcc"

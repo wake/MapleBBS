@@ -4,13 +4,13 @@
 # ½Ð¦b³oÃä­×§ï¦¨¦Û¤vªº³]©w
 # ¥H¤U³]©w¨ä¤¤¬Ò¤£¯à¦³ªÅ¥Õ©M [] µ¥²Å¸¹¡A¦p "TNFSH [Wolf] BBS" ³o¼Ë¬O¤£¦X®æªº
 
-schoolname="¥x«n¤@¤¤"
-bbsname="»P«n¦@»R"
-bbsname2="TNFSH.Wolf.BBS"
-sysopnick="¯T¤Hªø¦Ñ"
-tag_valid="WolfBBS"
-myipaddr="210.70.137.5"
-myhostname="bbs.tnfsh.tn.edu.tw"
+schoolname="ST¹êÅç«Ç"
+bbsname="©Ô©¬¤§µ²"
+bbsname2="STRoom.LaPa.BBS"
+sysopnick="©Ô©¬¥ý¥Í"
+tag_valid="LaPaBBS"
+myipaddr="106.187.34.191"
+myhostname="_rt.wake.gs"
 msg_bmw="¤ô²y"
 
 # ½Ð­×§ï±zªº§@·~¨t²Î
@@ -33,7 +33,7 @@ echo "±zªº§@·~¨t²Î          ¬O $ostype"
 echo "±z¥i¥H¦b http://home.pchome.com.tw/soho/itoc/ §ä¨ì³Ì·sªºµ{¦¡¤Î¦w¸Ë¤å¥ó"
 
 # ¦^ BBSHOME
-cd
+cd ~/bbs
 echo "[1;36m¶i¦æÂà´«¤¤ [0;5m...[m"
 
 
@@ -89,7 +89,7 @@ make clean $ostype install
 
 # ±Ò°Ê
 # °²³]¶}¦b port 9987
-cd
+cd ~/bbs
 bin/bbsd 9987
 bin/camera
 bin/account

@@ -14,7 +14,7 @@
 # lib daemon innbbsd maple so game pip util util/backup util/tran util/uno
 
 
-HOME = /home/bbs
+HOME = /home/lapa/bbs
 
 
 all:

@@ -8,9 +8,9 @@
 # ------------------------------------------------------ #
 
 
-CC	= $(gcc)
+CC	= gcc34
 RANLIB	= ranlib
-CPROTO	= cproto -E"gcc -pipe -E" -I../include # -s -v
+CPROTO	= cproto -E"gcc34 -pipe -E" -I../include # -s -v
 CFLAGS	= -O2 -s -pipe -fomit-frame-pointer -Wunused -I../include -m32
 
 

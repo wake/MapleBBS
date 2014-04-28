@@ -15,7 +15,6 @@
 
 
 HOME = /home/bbs
-gcc  = gcc34
 
 
 all:

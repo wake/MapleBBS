@@ -110,51 +110,22 @@ mail2brd(brd)
 
   while (fgets(buf, sizeof(buf), stdin))
   {
-    if (!memcmp(buf, "From", 4))
+start:
+    if (!memcmp(buf, "From: ", 6))
     {
-      if ((str = strchr(buf, '<')) && (ptr = strrchr(str, '>')))
-      {
-	if (str[-1] == ' ')
-	  str[-1] = '\0';
+      str = buf + 6;
 
-	if (strchr(++str, '@'))
-	  *ptr = '\0';
-	else					/* 由 local host 寄信 */
-	  strcpy(ptr, "@" MYHOSTNAME);
+      if (*str == '\0')
+	return EX_NOUSER;
 
-	if (ptr = (char *) strchr(buf, ' '))
-	{
-	  while (*++ptr == ' ')
-	    ;
-	}
+      if (ptr = strchr(str, '\n'))
+	*ptr = '\0';
 
-	if (ptr && *ptr == '"')
-	{
-	  char *right;
-
-	  if (right = strrchr(++ptr, '"'))
-	    *right = '\0';
-
-	  str_decode(ptr);
-	  sprintf(sender, "%s (%s)", str, ptr);
-	  strcpy(nick, ptr);
-	  strcpy(owner, str);
-	}
-	else	/* Thor.980907: 沒有 finger name, 特別處理 */
-	{
-	  strcpy(sender, str);
-	  strcpy(owner, str);
-	}
-      }
+      str_from(str, owner, nick);
+      if (*nick)
+	sprintf(sender, "%s (%s)", owner, nick);
       else
-      {
-	strtok(buf, " \t\n\r");
-	strcpy(sender, (char *) strtok(NULL, " \t\n\r"));
-
-	if (!strchr(sender, '@'))	/* 由 local host 寄信 */
-	  strcat(sender, "@" MYHOSTNAME);
-	strcpy(owner, sender);
-      }
+	strcpy(sender, owner);
 
       /* itoc.040804: 擋信黑白名單 */
       str_lower(buf, owner);	/* 保持原 email 的大小寫 */
@@ -175,7 +146,21 @@ mail2brd(brd)
     else if (!memcmp(buf, "Subject: ", 9))
     {
       str_ansi(title, buf + 9, sizeof(title));
-      str_decode(title);
+      /* str_decode(title); */
+      /* LHD.051106: 若可能經 RFC 2047 QP encode 則有可能多行 subject */
+      if (strstr(buf + 9, "=?"))
+      {
+	while (fgets(buf, sizeof(buf), stdin))
+	{
+	  if (buf[0] == ' ' || buf[0] == '\t')  /* 第二行以後會以空白或 TAB 開頭 */
+	    str_ansi(title + strlen(title), strstr(buf, "=?"), sizeof(title));
+	  else
+	  {
+	    str_decode(title);
+	    goto start;
+	  }
+	}
+      }
     }
 
     else if (!memcmp(buf, "Content-Type: ", 14))
@@ -249,7 +234,11 @@ mail2brd(brd)
 
   /* append the record to the .DIR */
 
+  /* wakefield.081212: 移除原本置底 */
+  /*
   rec_bot(folder, &hdr, sizeof(HDR));
+  */
+  rec_add(folder, &hdr, sizeof(HDR));
 
   /* amaki.040311: 要讓class_item()更新用 */
   brd->btime = -1;

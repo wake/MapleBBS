@@ -127,7 +127,7 @@ post_terminator(xo)		/* Thor.980521: 終極文章刪除大法 */
 	}
 	else
 	{
-	  /* 若為看板就連線砍信 */
+	  /* 砍文並連線砍信 */
 
 	  cancel_post(hdr);
 	  hdr_fpath(fold, fpath, hdr);
@@ -144,6 +144,8 @@ post_terminator(xo)		/* Thor.980521: 終極文章刪除大法 */
       else
   contWhileOuter:
 	unlink(fnew);
+
+      btime_update(brd_bno(currboard));
     } while (++head < tail);
 
     /* 還原 currboard */
@@ -179,11 +181,10 @@ post_brdtitle(xo)
     {
       memcpy(oldbrd, &newbrd, sizeof(BRD));
       rec_put(FN_BRD, &newbrd, sizeof(BRD), currbno, NULL);
-      return XO_HEAD;	/* itoc.011125: 要重繪中文板名 */
     }
   }
 
-  return XO_FOOT;
+  return XO_HEAD;
 }
 
 
@@ -208,15 +209,132 @@ post_memo_edit(xo)
     if (mode == 'd')
     {
       unlink(fpath);
-      return XO_FOOT;
+    }
+    else
+    {
+      if (vedit(fpath, 0))	/* Thor.981020: 注意被talk的問題 */
+	vmsg(msg_cancel);
+    }
+  }
+  return XO_HEAD;
+}
+
+
+/* wake.080605: 自訂發文類別 */
+#ifdef POST_PREFIX
+/* ----------------------------------------------------- */
+/* 板主功能 : 修改發文類別                               */
+/* ----------------------------------------------------- */
+
+
+static int
+post_prefix_edit(xo)
+  XO *xo;
+{
+#define NUM_PREFIX      6
+  int i;
+  FILE *fp;
+  char fpath[64], buf[20], *vans_tmp, prefix[NUM_PREFIX][20], *menu[NUM_PREFIX + 3];
+  char *prefix_def[NUM_PREFIX] =   /* 預設的類別 */
+  {
+    "---------", "---------", "---------", "---------", "---------", "---------"
+  };
+
+  if (!(bbstate & STAT_BOARD))
+    return XO_NONE;
+
+  BRD *oldbrd, newbrd;
+
+  oldbrd = bshm->bcache + currbno;
+  memcpy(&newbrd, oldbrd, sizeof(BRD));
+
+  if ((newbrd.battr & BRD_PREFIX) && (newbrd.battr & BRD_PREFIX_EDIT))
+    vans_tmp = "文章發表類別 (C)關閉 (S)預設 \033[1;31m(B)自訂\033[m (D)刪除 (E)編輯 (Q)取消？[E] ";
+  else if (newbrd.battr & BRD_PREFIX)
+    vans_tmp = "文章發表類別 (C)關閉 \033[1;31m(S)預設\033[m (B)自訂 (D)刪除 (E)編輯 (Q)取消？[E] ";
+  else
+    vans_tmp = "文章發表類別 \033[1;31m(C)關閉\033[m (S)預設 (B)自訂 (D)刪除 (E)編輯 (Q)取消？[E] ";
+
+  i = vans(vans_tmp);
+
+  if (i == 'q')
+    return XO_HEAD;
+
+  if (i == 'c' || i == 's' || i == 'b')
+	{
+
+    if (i == 'c')
+      newbrd.battr &= ~BRD_PREFIX;
+    else if (i == 's')
+    {
+      newbrd.battr |= BRD_PREFIX;
+      newbrd.battr &= ~BRD_PREFIX_EDIT;
+    }
+    else
+      newbrd.battr |= (BRD_PREFIX | BRD_PREFIX_EDIT);
+
+    if (memcmp(&newbrd, oldbrd, sizeof(BRD)) && vans(msg_sure_ny) == 'y')
+    {
+      memcpy(oldbrd, &newbrd, sizeof(BRD));
+      rec_put(FN_BRD, &newbrd, sizeof(BRD), currbno, NULL);
     }
 
-    if (vedit(fpath, 0))	/* Thor.981020: 注意被talk的問題 */
-      vmsg(msg_cancel);
     return XO_HEAD;
   }
-  return XO_FOOT;
+
+  brd_fpath(fpath, currboard, "prefix");
+
+  if (i == 'd')
+  {
+    unlink(fpath);
+    return XO_HEAD;
+  }
+
+  i = 0;
+
+  if (fp = fopen(fpath, "r"))
+  {
+    for (; i < NUM_PREFIX; i++)
+    {
+      if (fscanf(fp, "%10s", buf) != 1)
+        break;
+      sprintf(prefix[i], "%d.%s", i + 1, buf);
+    }
+    fclose(fp);
+  }
+
+  /* 填滿至 NUM_PREFIX 個 */
+  for (; i < NUM_PREFIX; i++)
+    sprintf(prefix[i], "%d.%s", i + 1, prefix_def[i]);
+
+  menu[0] = "10";
+  for (i = 1; i <= NUM_PREFIX; i++)
+    menu[i] = prefix[i - 1];
+  menu[NUM_PREFIX + 1] = "0.離開";
+  menu[NUM_PREFIX + 2] = NULL;
+
+  do
+  {
+    /* 在 popupmenu 裡面按 左鍵 離開 */
+    i = pans(3, 20, "文章類別", menu) - '0';
+    if (i >= 1 && i <= NUM_PREFIX)
+    {
+      strcpy(buf, prefix[i - 1] + 2);
+      if (vget(b_lines, 0, "類別：", buf, 10, GCARRY))
+        strcpy(prefix[i - 1] + 2, buf);
+    }
+  } while (i);
+
+  if (fp = fopen(fpath, "w"))
+  {
+    for (i = 0; i < NUM_PREFIX; i++)
+      fprintf(fp, "%s ", prefix[i] + 2);
+    fclose(fp);
+  }
+
+  return XO_HEAD;
 }
+#endif      /* POST_PREFIX */
 
 
 /* ----------------------------------------------------- */
@@ -243,7 +361,7 @@ post_battr_noscore(xo)
     newbrd.battr |= BRD_NOSCORE;
     break;
   default:
-    return XO_FOOT;
+    return XO_HEAD;
   }
 
   if (memcmp(&newbrd, oldbrd, sizeof(BRD)) && vans(msg_sure_ny) == 'y')
@@ -252,7 +370,7 @@ post_battr_noscore(xo)
     rec_put(FN_BRD, &newbrd, sizeof(BRD), currbno, NULL);
   }
 
-  return XO_FOOT;
+  return XO_HEAD;
 }
 #endif	/* HAVE_SCORE */
 
@@ -266,16 +384,16 @@ static int
 post_changeBM(xo)
   XO *xo;
 {
-  char buf[80], uid[IDLEN + 1], *blist;
+  char buf[80], userid[IDLEN + 2], *blist;
   BRD *oldbrd, newbrd;
   ACCT acct;
-  int dirty, len;
+  int BMlen, len;
 
   oldbrd = bshm->bcache + currbno;
 
   blist = oldbrd->BM;
   if (is_bm(blist, cuser.userid) != 1)	/* 只有正板主可以設定板主名單 */
-    return XO_FOOT;
+    return XO_HEAD;
 
   memcpy(&newbrd, oldbrd, sizeof(BRD));
 
@@ -286,28 +404,54 @@ post_changeBM(xo)
   prints("目前板主為 %s\n請輸入新的板主名單，或按 [Return] 不改", oldbrd->BM);
 
   strcpy(buf, oldbrd->BM);
-  dirty = strlen(buf);
+  BMlen = strlen(buf);
 
-  while (vget(10, 0, "請輸入副板主，結束請按 Enter，清掉所有副板主請打「無」：", uid, IDLEN + 1, DOECHO))
+  while (vget(10, 0, "請輸入副板主，結束請按 Enter，清掉所有副板主請打「無」：", userid, IDLEN + 1, DOECHO))
   {
-    if (!strcmp(uid, "無"))
+    if (!strcmp(userid, "無"))
     {
       strcpy(buf, cuser.userid);
-      dirty = strlen(buf);
+      BMlen = strlen(buf);
     }
-    else if (acct_load(&acct, uid) >= 0 && !is_bm(buf, acct.userid))   /* 輸入新板主 */
+    else if (is_bm(buf, userid))	/* 刪除舊有的板主 */
     {
-      len = strlen(acct.userid) + 1;  /* '/' + userid */
-      if (dirty + len > BMLEN)
+      len = strlen(userid);
+      if (!str_cmp(cuser.userid, userid))
+      {
+	vmsg("不可以將自己移出板主名單");
+	continue;
+      }
+      else if (!str_cmp(buf + BMlen - len, userid))	/* 名單上最後一位，ID 後面不接 '/' */
+      {
+	buf[BMlen - len - 1] = '\0';			/* 刪除 ID 及前面的 '/' */
+	len++;
+      }
+      else						/* ID 後面會接 '/' */
+      {
+	str_lower(userid, userid);
+	strcat(userid, "/");
+	len++;
+	blist = str_str(buf, userid);
+	strcpy(blist, blist + len);
+      }
+      BMlen -= len;
+    }
+    else if (acct_load(&acct, userid) >= 0 && !is_bm(buf, userid))	/* 輸入新板主 */
+    {
+      len = strlen(userid) + 1;	/* '/' + userid */
+      if (BMlen + len > BMLEN)
       {
 	vmsg("板主名單過長，無法將這 ID 設為板主");
 	continue;
       }
-      sprintf(buf + dirty, "/%s", acct.userid);
-      dirty += len;
+      sprintf(buf + BMlen, "/%s", acct.userid);
+      BMlen += len;
 
       acct_setperm(&acct, PERM_BM, 0);
     }
+    else
+      continue;
+
     move(8, 0);
     prints("目前板主為 %s", buf);
     clrtoeol();
@@ -319,11 +463,10 @@ post_changeBM(xo)
     memcpy(oldbrd, &newbrd, sizeof(BRD));
     rec_put(FN_BRD, &newbrd, sizeof(BRD), currbno, NULL);
 
-    sprintf(currBM, "板主：%s", newbrd.BM);
-    return XO_HEAD;	/* 要重繪檔頭的板主 */
+    sprintf(currBM, "板主：%s", newbrd.BM);	/* 要重繪檔頭的板主 */
   }
 
-  return XO_BODY;
+  return XO_HEAD;
 }
 
 
@@ -363,7 +506,7 @@ post_brdlevel(xo)
     break;
 
   default:
-    return XO_FOOT;
+    return XO_HEAD;
   }
 
   if (memcmp(&newbrd, oldbrd, sizeof(BRD)) && vans(msg_sure_ny) == 'y')
@@ -372,7 +515,7 @@ post_brdlevel(xo)
     rec_put(FN_BRD, &newbrd, sizeof(BRD), currbno, NULL);
   }
 
-  return XO_FOOT;
+  return XO_HEAD;
 }
 #endif	/* HAVE_MODERATED_BOARD */
 
@@ -429,6 +572,8 @@ int
 post_manage(xo)
   XO *xo;
 {
+  BRD *brd;
+
 #ifdef POPUP_ANSWER
   char *menu[] = 
   {
@@ -443,10 +588,13 @@ post_manage(xo)
     "Level   公開/好友/秘密",
     "OPal    板友名單",
 #  endif
+#ifdef POST_PREFIX
+    "RPrefix 設定文章發表類別",
+#endif
     NULL
   };
 #else
-  char *menu = "◎ 板主選單 (B)主題 (W)進板 (M)副板"
+  char *menu = "◎ 板主選單 (B)主題 (W)進板 (R)類別 (M)副板"
 #  ifdef HAVE_SCORE
     " (S)評分"
 #  endif
@@ -456,8 +604,20 @@ post_manage(xo)
     "？[Q] ";
 #endif
 
+  vs_bar("板主管理");
+  brd = bshm->bcache + currbno;
+  prints("看板名稱：%s\n看板說明：[%s] %s\n板主名單：%s\n",
+    brd->brdname, brd->class, brd->title, brd->BM);
+  prints("中文敘述：%s\n", brd->title);
+#ifdef HAVE_MODERATED_BOARD
+  prints("看板權限：%s看板\n", brd->readlevel == PERM_SYSOP ? "秘密" : brd->readlevel == PERM_BOARD ? "好友" : "公開");
+#endif
+
   if (!(bbstate & STAT_BOARD))
-    return XO_NONE;
+  {
+    vmsg(NULL);
+    return XO_HEAD;
+  }
 
 #ifdef POPUP_ANSWER
   switch (pans(3, 20, "板主選單", menu))
@@ -470,6 +630,11 @@ post_manage(xo)
 
   case 'w':
     return post_memo_edit(xo);
+
+#ifdef POST_PREFIX
+ case 'r':
+   return post_prefix_edit(xo);
+#endif
 
   case 'm':
     return post_changeBM(xo);
@@ -488,5 +653,5 @@ post_manage(xo)
 #endif
   }
 
-  return XO_FOOT;
+  return XO_HEAD;
 }

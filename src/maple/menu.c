@@ -114,7 +114,7 @@ pad_draw()
       return 0;
   } while (cc == 'e');
 
-  time(&(pad.tpad));
+  time(&pad.tpad);
 
   /* itoc.020812.註解: 改版面的時候要注意 struct Pad.msg[] 是否夠大 */
   str = pad.msg;
@@ -130,7 +130,7 @@ pad_draw()
     "│  \033[1;%dm%-70s\033[m  │\n"
     "│  \033[1;%dm%-70s\033[m  │\n"
     "╰  \033[1;%dm%-70s\033[m  ╯\n",
-    Btime(&(pad.tpad)),
+    Btime(&pad.tpad),
     pcolors[color], buf[0],
     pcolors[color], buf[1],
     pcolors[color], buf[2]);
@@ -240,7 +240,14 @@ vs_head(title, mid)
 
   len = d_cols + 69 - strlen(title) - strlen(currboard);
 
-  if (HAS_STATUS(STATUS_BIFF))
+  /* 040209.Lacool:新增以下 6 行，當有新註冊單時會自動顯示 */
+  if (HAS_PERM(PERM_ALLREG) && rec_num(FN_RUN_RFORM, 1))
+  {
+    mid = "\033[41;37;5m 有使用者註冊 \033[0;1;33;44m";
+    spc = 14;
+  }
+
+  else if (HAS_STATUS(STATUS_BIFF))
   {
     mid = "\033[5;41m 郵差來按鈴了 \033[m";
     spc = 14;
@@ -256,6 +263,22 @@ vs_head(title, mid)
     }
   }
 
+  /* 041023.Lacool:新增有人申請看板時自動閃爍顯示(僅判斷[最後一個]申請) */
+  if (HAS_PERM(PERM_ALLBOARD))
+  {
+    char *folder = "run/newbrd/"FN_DIR;
+    int num = rec_num(folder, sizeof(NBRD));
+    NBRD nbrd;
+
+    /* 看最後一篇是否已經開板 */
+    if (num > 0 && !rec_get(folder, &nbrd, sizeof(NBRD), num - 1) &&
+      !(nbrd.mode & NBRD_FINISH))
+    {
+      mid = "\033[5;41m 有人申請看板 \033[m";
+      spc = 14;
+    }
+  }
+
   spc = 2 + len - spc;
   len = 1 - spc & 1;
   memset(buf, ' ', spc >>= 1);
@@ -266,7 +289,9 @@ vs_head(title, mid)
   prints("\033[1;4%cm【%s】%s\033[33m%s\033[1;37;4%cm%s《%s》\033[m\n",
     spc, title, buf, mid, spc, buf + len, currboard);
 #else
-  prints("\033[1;44m【%s】%s\033[33m%s\033[1;37;44m%s《%s》\033[m\n",
+  /* 040518.Lacool:修改 head 顏色 */
+  //prints("\033[1;44m【%s】%s\033[33m%s\033[1;37;44m%s《%s》\033[m\n",
+  prints("\033[1;37;44m【%s】%s\033[33;44m%s\033[44m%s\033[37;44m《%s》\033[m\n",
     title, buf, mid, buf + len, currboard);
 #endif
 }
@@ -361,7 +386,7 @@ status_foot()
   ufo = (now - (uptime - 86400)) / 60;	/* 借用 ufo 來做時間(分) */
 
   /* itoc.010717: 改一下 feeter 使長度和 FEETER_XXX 一致 */
-  sprintf(feeter, COLOR1 " %8.8s %02d:%02d " COLOR2 " 人數 %-4d 我是 %-12s %s [呼叫]%-9s  ",
+  sprintf(feeter, COLOR1 " %8.8s %02d:%02d " COLOR2 " 人數 %-4d 我是 %-12s %s [呼叫]%-9s ",
     fshm->today, ufo / 60, ufo % 60, total_user, cuser.userid, coinmsg, flagmsg);
   outf(feeter);
 }
@@ -387,6 +412,8 @@ typedef struct
   usint level;
   int umode;
   char *desc;
+  /* wake.080601: 增加一個 on over string */
+  char *descover;
 }      MENU;
 
 
@@ -409,30 +436,42 @@ static MENU menu_main[];
 static MENU menu_admin[] =
 {
   "bin/admutil.so:a_user", PERM_ALLACCT, - M_SYSTEM,
-  "User       ◤ 顧客資料 ◢",
+  "User        顧客資料 ",
+  "User         顧客資料 ",
 
   "bin/admutil.so:a_search", PERM_ALLACCT, - M_SYSTEM,
-  "Hunt       ◤ 搜尋引擎 ◢",
+  "Hunt        搜尋引擎 ",
+  "Hunt         搜尋引擎 ",
 
   "bin/admutil.so:a_editbrd", PERM_ALLBOARD, - M_SYSTEM,
-  "QSetBoard  ◤ 設定看板 ◢",
+  "QSetBoard   設定看板 ",
+  "QSetBoard    設定看板 ",
 
   "bin/innbbs.so:a_innbbs", PERM_ALLBOARD, - M_SYSTEM,
-  "InnBBS     ◤ 轉信設定 ◢",
+  "InnBBS      轉信設定 ",
+  "InnBBS       轉信設定 ",
 
 #ifdef HAVE_REGISTER_FORM
   "bin/admutil.so:a_register", PERM_ALLREG, - M_SYSTEM,
-  "Register   ◤ 審註冊單 ◢",
+  "Register    審註冊單 ",
+  "Register     審註冊單 ",
 
   "bin/admutil.so:a_regmerge", PERM_ALLREG, - M_SYSTEM,
-  "Merge      ◤ 復原審核 ◢",
+  "Merge       復原審核 ",
+  "Merge        復原審核 ",
 #endif
 
   "bin/admutil.so:a_xfile", PERM_ALLADMIN, - M_XFILES,
-  "Xfile      ◤ 系統檔案 ◢",
-  
+  "Xfile       系統檔案 ",
+  "Xfile        系統檔案 ",
+
+  "bin/admutil.so:a_restore", PERM_SYSOP, - M_SYSTEM,
+  "TRestore    還原備份 ",
+  "TRestore     還原備份 ",
+
   "bin/admutil.so:a_resetsys", PERM_ALLADMIN, - M_SYSTEM,
-  "BBSreset   ◤ 重置系統 ◢",
+  "BBSreset    重置系統 ",
+  "BBSreset     重置系統 ",
 
   menu_main, PERM_MENU + Ctrl('A'), M_AMENU,
   "系統維護"
@@ -455,37 +494,46 @@ XoMbox()
 static MENU menu_mail[] =
 {
   XoMbox, PERM_BASIC, M_RMAIL,
-  "Read       ├ 閱\讀信件 ┤",
+  "Read       你的超級信箱",
+  "Read        你的超級信箱",
 
   m_send, PERM_LOCAL, M_SMAIL,
-  "Mail       ├ 站內寄信 ┤",
+  "Mail       寄給站內只有一人",
+  "Mail        寄給站內只有一人",
 
 #ifdef MULTI_MAIL  /* Thor.981009: 防止愛情幸運信 */
   m_list, PERM_LOCAL, M_SMAIL,
-  "List       ├ 群組寄信 ┤",
+  "List       寄給站內好多人",
+  "List        寄給站內好多人",
 #endif
 
   m_internet, PERM_INTERNET, M_SMAIL,
-  "Internet   ├ 寄依妹兒 ┤",
+  "Internet   寄到站外電油信箱",
+  "Internet    寄到站外電油信箱",
 
 #ifdef HAVE_SIGNED_MAIL
   m_verify, 0, M_XMODE,
-  "Verify     ├ 驗證信件 ┤",
+  "Verify     驗明真身",
+  "Verify      驗明真身",
 #endif
 
 #ifdef HAVE_MAIL_ZIP
   m_zip, PERM_INTERNET, M_SMAIL,
-  "Zip        ├ 打包資料 ┤",
+  "Zip        打包外帶（燒滾滾）",
+  "Zip         打包外帶（燒滾滾）",
 #endif
 
   m_sysop, 0, M_SMAIL,
-  "Yes Sir!   ├ 投書站長 ┤",
+  "Yes Sir!   夜半騷擾站長",
+  "Yes  Sir!   夜半騷擾站長",
   
   "bin/admutil.so:m_bm", PERM_ALLADMIN, - M_SMAIL,
-  "BM All     ├ 板主通告 ┤",	/* itoc.000512: 新增 m_bm */
-  
+  "BM All     騷擾眾版主",	/* itoc.000512: 新增 m_bm */
+  "BM All      騷擾眾版主",
+
   "bin/admutil.so:m_all", PERM_ALLADMIN, - M_SMAIL,
-  "User All   ├ 全站通告 ┤",	/* itoc.000512: 新增 m_all */
+  "User All   騷擾所有人",	/* itoc.000512: 新增 m_all */
+  "User All    騷擾所有人",
 
   menu_main, PERM_MENU + Ctrl('A'), M_MMENU,	/* itoc.020829: 怕 guest 沒選項 */
   "電子郵件"
@@ -515,21 +563,25 @@ static MENU menu_talk[];
 static MENU menu_list[] =
 {
   t_pal, PERM_BASIC, M_PAL,
-  "Pal        → 朋友名單 ←",
+  "Pal        好友名單",
+  "Pal         好友名單",
 
 #ifdef HAVE_LIST
   t_list, PERM_BASIC, M_PAL,
-  "List       → 特別名單 ←",
+  "List       分類排排站",
+  "List        分類排排站",
 #endif
 
 #ifdef HAVE_ALOHA
   "bin/aloha.so:t_aloha", PERM_PAGE, - M_PAL,
-  "Aloha      → 上站通知 ←",
+  "Aloha      上站報告",
+  "Aloha       上站報告",
 #endif
 
 #ifdef LOGIN_NOTIFY
   t_loginNotify, PERM_PAGE, M_PAL,
-  "Notify     → 系統協尋 ←",
+  "Notify     系統協尋",
+  "Notify      系統協尋",
 #endif
 
   menu_talk, PERM_MENU + 'P', M_TMENU,
@@ -540,32 +592,41 @@ static MENU menu_list[] =
 static MENU menu_talk[] =
 {
   XoUlist, 0, M_LUSERS,
-  "Users      → 遊客名單 ←",
+  "Users      站上使用者列表",
+  "Users       站上使用者列表",
 
   menu_list, PERM_BASIC, M_TMENU,
-  "ListMenu   → 設定名單 ←",
+  "ListMenu   各式名單設定",
+  "ListMenu    各式名單設定",
 
   t_pager, PERM_BASIC, M_XMODE,
-  "Pager      → 切換呼叫 ←",
+  "Pager      切換呼叫狀態",
+  "Pager       切換呼叫狀態",
 
   t_cloak, PERM_CLOAK, M_XMODE,
-  "Invis      → 隱身密法 ←",
+  "Invis      使用隱身密技",
+  "Invis       使用隱身密技",
 
   t_query, 0, M_QUERY,
-  "Query      → 查詢網友 ←",
+  "Query      偷偷打量網友",
+  "Query       偷偷打量網友",
 
   t_talk, PERM_PAGE, M_PAGE,
-  "Talk       → 情話綿綿 ←",
+  "Talk       找人聊天",
+  "Talk        找人聊天",
 
   /* Thor.990220: 改採外掛 */
   "bin/chat.so:t_chat", PERM_CHAT, - M_CHAT,
-  "ChatRoom   → 眾口鑠金 ←",
+  "ChatRoom   拉帕哈拉客房",
+  "ChatRoom    拉帕哈拉客房",
 
   t_display, PERM_BASIC, M_BMW,
-  "Display    → 瀏覽水球 ←",
+  "Display    瀏覽水球訊息",
+  "Display     瀏覽水球訊息",
 
   t_bmw, PERM_BASIC, M_BMW,
-  "Write      → 回顧水球 ←",
+  "Write      回顧水球記錄",
+  "Write       回顧水球記錄",
 
   menu_main, PERM_MENU + 'U', M_TMENU,
   "休閒聊天"
@@ -587,20 +648,24 @@ static MENU menu_user[];
 static MENU menu_register[] =
 {
   u_addr, PERM_BASIC, M_XMODE,
-  "Address    《 電子信箱 》",
+  "Address    設定電子信箱",
+  "Address     設定電子信箱",
 
 #ifdef HAVE_REGISTER_FORM
   u_register, PERM_BASIC, M_UFILES,
-  "Register   《 填註冊單 》",
+  "Register   填寫註冊單",
+  "Register    填寫註冊單",
 #endif
 
 #ifdef HAVE_REGKEY_CHECK
   u_verify, PERM_BASIC, M_UFILES,
-  "Verify     《 填認證碼 》",
+  "Verify     填寫認證碼",
+  "Verify      填寫認證碼",
 #endif
 
   u_deny, PERM_BASIC, M_XMODE,
-  "Perm       《 恢復權限 》",
+  "Perm       恢復權限",
+  "Perm        恢復權限",
 
   menu_user, PERM_MENU + 'A', M_UMENU,
   "註冊選單"
@@ -610,29 +675,37 @@ static MENU menu_register[] =
 static MENU menu_user[] =
 {
   u_info, PERM_BASIC, M_XMODE,
-  "Info       《 個人資料 》",
+  "Info       編修個人資料",
+  "Info        編修個人資料",
 
   u_setup, 0, M_UFILES,
-  "Habit      《 喜好模式 》",
+  "Habit      設定喜好模式",
+  "Habit       設定喜好模式",
 
   menu_register, PERM_BASIC, M_UMENU,
-  "Register   《 註冊選單 》",
+  "Register   填寫註冊單",
+  "Register    填寫註冊單",
 
   pad_view, 0, M_READA,
-  "Note       《 觀看留言 》",
+  "Note       觀看版友留言",
+  "Note        觀看版友留言",
 
   /* itoc.010309: 不必離站可以寫留言板 */
   pad_draw, PERM_POST, M_POST,
-  "Pad        《 心情塗鴉 》",
+  "Pad        塗鴉留言版",
+  "Pad         塗鴉留言版",
 
   u_lock, PERM_BASIC, M_IDLE,
-  "Lock       《 鎖定螢幕 》",
+  "Lock       鎖定螢幕畫面",
+  "Lock        鎖定螢幕畫面",
 
   u_xfile, PERM_BASIC, M_UFILES,
-  "Xfile      《 個人檔案 》",
+  "Xfile      編修個人檔案",
+  "Xfile       編修個人檔案",
 
   u_log, PERM_BASIC, M_UFILES,
-  "ViewLog    《 上站記錄 》",
+  "ViewLog    個人上站記錄",
+  "ViewLog     個人上站記錄",
 
   menu_main, PERM_MENU + 'H', M_UMENU,
   "個人設定"
@@ -657,13 +730,16 @@ static MENU menu_tool[];
 static MENU menu_song[] =
 {
   "bin/song.so:XoSongLog", 0, - M_XMODE,
-  "KTV        ♂ 點歌紀錄 ♀",
+  "KTV        點歌記錄簿",
+  "KTV         點歌記錄簿",
 
   "bin/song.so:XoSongMain", 0, - M_XMODE,
-  "Book       ♂ 唱所欲言 ♀",
+  "Book       打開點唱機",
+  "Book        打開點唱機",
 
   "bin/song.so:XoSongSub", 0, - M_XMODE,
-  "Note       ♂ 歌本投稿 ♀",
+  "Note       投稿新歌曲",
+  "Note        投稿新歌曲",
 
   menu_tool, PERM_MENU + 'K', M_XMENU,
   "玩點歌機"
@@ -673,20 +749,26 @@ static MENU menu_song[] =
 
 #ifdef HAVE_NETTOOL
   /* --------------------------------------------------- */
-  /* net menu						 */
+  /* net menu                                            */
   /* --------------------------------------------------- */
 
 static MENU menu_net[] =
 {
-  /* itoc.010821: 一般簡單的服務，讓 guest 也可以用；特殊的服務才要求 PERM_VALID */
+  /* itoc.010821: 一般簡單的服務，讓 guest 也可以用；特殊的服務才要求 PERM_INTERNET */
+
+  "bin/enews.so:main_enews", 0, - M_XMODE,
+  "Kimo News  雅虎奇摩新聞",
+  "Kimo News   雅虎奇摩新聞",
 
   "bin/railway.so:main_railway", 0, - M_XMODE,
-  "Railway    ♂ 台鐵時刻 ♀",
+  "Railway    台鐵時刻表",
+  "Railway     台鐵時刻表",
 
-  "bin/bbsnet.so:x_bbsnet", PERM_VALID, - M_XMODE,
-  "BBSnet     ♂ 雲遊四海 ♀",
+  "bin/bbsnet.so:x_bbsnet", PERM_INTERNET, - M_XMODE,
+  "BBSnet     進入時空之門",
+  "BBSnet      進入時空之門",
 
-  menu_tool, PERM_MENU + 'R', M_XMENU,
+  menu_tool, PERM_MENU + 'K', M_XMENU,
   "網路服務"
 };
 #endif
@@ -721,31 +803,40 @@ static MENU menu_game[];
 static MENU menu_game1[] =
 {
   "bin/liteon.so:main_liteon", 0, - M_GAME,
-  "0LightOn   ♂ 房間開燈 ♀",
+  "0LightOn    房間開燈 ",
+  "0LightOn     房間開燈 ",
 
   "bin/guessnum.so:guessNum", 0, - M_GAME,
-  "1GuessNum  ♂ 玩猜數字 ♀",
+  "1GuessNum   玩猜數字 ",
+  "1GuessNum    玩猜數字 ",
 
   "bin/guessnum.so:fightNum", 0, - M_GAME,
-  "2FightNum  ♂ 互猜數字 ♀",
+  "2FightNum   互猜數字 ",
+  "2FightNum    互猜數字 ",
 
   "bin/km.so:main_km", 0, - M_GAME,
-  "3KongMing  ♂ 孔明棋譜 ♀",
+  "3KongMing   孔明棋譜 ",
+  "3KongMing    孔明棋譜 ",
 
   "bin/recall.so:main_recall", 0, - M_GAME,
-  "4Recall    ♂ 回憶之卵 ♀",
+  "4Recall     回憶之卵 ",
+  "4Recall      回憶之卵 ",
 
   "bin/mine.so:main_mine", 0, - M_GAME,
-  "5Mine      ♂ 亂踩地雷 ♀",
+  "5Mine       亂踩地雷 ",
+  "5Mine        亂踩地雷 ",
 
   "bin/fantan.so:main_fantan", 0, - M_GAME, 
-  "6Fantan    ♂ 番攤接龍 ♀",
+  "6Fantan     番攤接龍 ",
+  "6Fantan      番攤接龍 ",
 
   "bin/dragon.so:main_dragon", 0, - M_GAME,
-  "7Dragon    ♂ 接龍遊戲 ♀",
+  "7Dragon     接龍遊戲 ",
+  "7Dragon      接龍遊戲 ",
 
   "bin/nine.so:main_nine", 0, - M_GAME,
-  "8Nine      ♂ 天地九九 ♀",
+  "8Nine       天地九九 ",
+  "8Nine        天地九九 ",
 
   menu_game, PERM_MENU + '0', M_XMENU,
   "益智空間"
@@ -754,31 +845,40 @@ static MENU menu_game1[] =
 static MENU menu_game2[] =
 {
   "bin/dice.so:main_dice", 0, - M_GAME,
-  "0Dice      ♂ 狂擲骰子 ♀",
+  "0Dice       狂擲骰子 ",
+  "0Dice        狂擲骰子 ",
 
   "bin/gp.so:main_gp", 0, - M_GAME,
-  "1GoldPoker ♂ 金牌撲克 ♀",
+  "1GoldPoker  金牌撲克 ",
+  "1GoldPoker   金牌撲克 ",
 
   "bin/bj.so:main_bj", 0, - M_GAME,
-  "2BlackJack ♂ 二十一點 ♀",
+  "2BlackJack  二十一點 ",
+  "2BlackJack   二十一點 ",
 
   "bin/chessmj.so:main_chessmj", 0, - M_GAME,
-  "3ChessMJ   ♂ 象棋麻將 ♀",
+  "3ChessMJ    象棋麻將 ",
+  "3ChessMJ     象棋麻將 ",
 
   "bin/seven.so:main_seven", 0, - M_GAME,
-  "4Seven     ♂ 賭城七張 ♀",
+  "4Seven      賭城七張 ",
+  "4Seven       賭城七張 ",
  
   "bin/race.so:main_race", 0, - M_GAME,
-  "5Race      ♂ 進賽馬場 ♀",
+  "5Race       進賽馬場 ",
+  "5Race        進賽馬場 ",
 
   "bin/bingo.so:main_bingo", 0, - M_GAME,
-  "6Bingo     ♂ 賓果大戰 ♀",
+  "6Bingo      賓果大戰 ",
+  "6Bingo       賓果大戰 ",
 
   "bin/marie.so:main_marie", 0, - M_GAME,
-  "7Marie     ♂ 大小瑪莉 ♀",
+  "7Marie      大小瑪莉 ",
+  "7Marie       大小瑪莉 ",
 
   "bin/bar.so:main_bar", 0, - M_GAME,
-  "8Bar       ♂ 吧台瑪莉 ♀",
+  "8Bar        吧台瑪莉 ",
+  "8Bar         吧台瑪莉 ",
 
   menu_game, PERM_MENU + '0', M_XMENU,
   "遊戲樂園"
@@ -787,16 +887,20 @@ static MENU menu_game2[] =
 static MENU menu_game3[] =
 {
   "bin/pip.so:main_pip", PERM_BASIC, - M_GAME,
-  "0Chicken   ♂ 電子小雞 ♀",
+  "0Chicken    電子小雞 ",
+  "0Chicken     電子小雞 ",
 
   "bin/pushbox.so:main_pushbox", 0, - M_GAME,
-  "1PushBox   ♂ 倉庫番番 ♀",
+  "1PushBox    倉庫番番 ",
+  "1PushBox     倉庫番番 ",
 
   "bin/tetris.so:main_tetris", 0, - M_GAME,
-  "2Tetris    ♂ 俄羅斯塊 ♀",
+  "2Tetris     俄羅斯塊 ",
+  "2Tetris      俄羅斯塊 ",
 
-  "bin/gray.so:main_gray", 0, - M_GAME,
-  "3Gray      ♂ 淺灰大戰 ♀",
+  "bin/reversi.so:main_reversi", 0, - M_GAME,
+  "3Reversi    淺灰大戰 ",
+  "3Reversi     淺灰大戰 ",
 
   menu_game, PERM_MENU + '0', M_XMENU,
   "反斗特區"
@@ -806,12 +910,15 @@ static MENU menu_game[] =
 {
   menu_game1, PERM_BASIC, M_XMENU,
   "1Game      【 益智天堂 】",
+  "1Game       【 益智天堂 】",
 
   menu_game2, PERM_BASIC, M_XMENU,
   "2Game      【 遊戲樂園 】",
+  "2Game       【 遊戲樂園 】",
 
   menu_game3, PERM_BASIC, M_XMENU,
   "3Game      【 反斗特區 】",
+  "3Game       【 反斗特區 】",
 
   menu_tool, PERM_MENU + '1', M_XMENU,
   "遊戲人生"
@@ -827,19 +934,24 @@ static MENU menu_game[] =
 static MENU menu_buy[] =
 {
   "bin/bank.so:x_bank", PERM_BASIC, - M_GAME,
-  "Bank       ♂ 信託銀行 ♀",
+  "Bank       拉帕信託銀行 ",
+  "Bank        拉帕信託銀行 ",
 
   "bin/bank.so:b_invis", PERM_BASIC, - M_GAME,
-  "Invis      ♂ 隱形現身 ♀",
+  "Invis      隱形現身 ",
+  "Invis       隱形現身 ",
 
   "bin/bank.so:b_cloak", PERM_BASIC, - M_GAME,
-  "Cloak      ♂ 無限隱形 ♀",
+  "Cloak      無限隱形 ",
+  "Cloak       無限隱形 ",
 
   "bin/bank.so:b_mbox", PERM_BASIC, - M_GAME,
-  "Mbox       ♂ 信箱無限 ♀",
+  "Mbox       信箱無上限 ",
+  "Mbox        信箱無上限 ",
 
   "bin/bank.so:b_xempt", PERM_BASIC, - M_GAME,
-  "Xempt      ♂ 永久保留 ♀",
+  "Xempt      帳號永久保留 ",
+  "Xempt       帳號永久保留 ",
 
   menu_tool, PERM_MENU + 'B', M_XMENU,
   "金融市場"
@@ -854,37 +966,45 @@ static MENU menu_buy[] =
 static MENU menu_other[] =
 {
   "bin/vote.so:vote_all", PERM_BASIC, - M_VOTE,	/* itoc.010414: 投票中心 */
-  "VoteAll    ♂ 投票中心 ♀",
+  "VoteAll     投票中心 ",
+  "VoteAll      投票中心 ",
 
 #ifdef HAVE_TIP
   "bin/xyz.so:x_tip", 0, - M_READA,
-  "Tip        ♂ 教學精靈 ♀",
+  "Tip         教學精靈 ",
+  "Tip          教學精靈 ",
 #endif
 
 #ifdef HAVE_LOVELETTER
   "bin/xyz.so:x_loveletter", 0, - M_READA,
-  "LoveLetter ♂ 情書撰寫 ♀",
+  "LoveLetter  情書撰寫 ",
+  "LoveLetter   情書撰寫 ",
 #endif
 
   "bin/xyz.so:x_password", PERM_VALID, - M_XMODE,
-  "Password   ♂ 忘記密碼 ♀",
+  "Password    忘記密碼 ",
+  "Password     忘記密碼 ",
 
 #ifdef HAVE_CLASSTABLE
   "bin/classtable.so:main_classtable", PERM_BASIC, - M_XMODE,
-  "ClassTable ♂ 功\課時段 ♀",
+  "ClassTable  功\課時段 ",
+  "ClassTable   功\課時段 ",
 #endif
 
 #ifdef HAVE_CREDIT
   "bin/credit.so:main_credit", PERM_BASIC, - M_XMODE,
-  "MoneyNote  ♂ 記帳手札 ♀",
+  "MoneyNote   記帳手札 ",
+  "MoneyNote    記帳手札 ",
 #endif
 
 #ifdef HAVE_CALENDAR
   "bin/todo.so:main_todo", PERM_BASIC, - M_XMODE,
-  "XTodo      ♂ 個人行程 ♀",
+  "XTodo       個人行程 ",
+  "XTodo        個人行程 ",
 
   "bin/calendar.so:main_calendar", 0, - M_XMODE,
-  "YCalendar  ♂ 萬年月曆 ♀",
+  "YCalendar   萬年月曆 ",
+  "YCalendar    萬年月曆 ",
 #endif
 
   menu_tool, PERM_MENU + Ctrl('A'), M_XMENU,	/* itoc.020829: 怕 guest 沒選項 */
@@ -895,32 +1015,41 @@ static MENU menu_other[] =
 static MENU menu_tool[] =
 {
 #ifdef HAVE_NETTOOL
-  menu_net, 0, M_XMENU,	/* itoc.010821: 一般簡單的服務，讓 guest 也可以用；特殊的服務才要求 PERM_VALID */
+  menu_net, 0, M_XMENU, /* itoc.010821: 一般簡單的服務，讓 guest 也可以用；特殊的服務才要求 PERM_INTERNET */
   "Net        【 網路服務 】",
+  "Net         【 網路服務 】",
 #endif
 
 #ifdef HAVE_SONG
   menu_song, 0, M_XMENU,
   "KTV        【 真情點歌 】",
+  "KTV         【 真情點歌 】",
 #endif
 
 #ifdef HAVE_COSIGN
+  /* 041022.Lacool:拔掉內層的連署 */
+  /*
   "bin/newbrd.so:XoNewBoard", PERM_VALID, - M_XMODE,
   "Join       【 看板連署 】",
+  "Join        【 看板連署 】",
+  */
 #endif
 
 #ifdef HAVE_GAME
   menu_game, PERM_BASIC, M_XMENU,
   "Game       【 遊戲人生 】",
+  "Game        【 遊戲人生 】",
 #endif
 
 #ifdef HAVE_BUY
   menu_buy, PERM_BASIC, M_XMENU,
   "Market     【 金融市場 】",
+  "Market      【 金融市場 】",
 #endif
 
   menu_other, 0, M_XMENU,
   "Other      【 雜七雜八 】",
+  "Other       【 雜七雜八 】",
 
   menu_main, PERM_MENU + Ctrl('A'), M_XMENU,	/* itoc.020829: 怕 guest 沒選項 */
   "個人工具"
@@ -945,44 +1074,58 @@ Gem()
 
 static MENU menu_main[] =
 {
+  /* 041023.Lacool:隱藏系統選項 */
+#if 0
   menu_admin, PERM_ALLADMIN, M_AMENU,
-  "0Admin    Φ 系統維護區 Φ",
+  "0Admin    【 系統維護區 】",
+  "0Admin     【 系統維護區 】",
+#endif
 
   Gem, 0, M_GEM,
-  "Announce  ξ 精華公佈欄 ξ",
+  "Announce  【 精華公佈欄 】",
+  "Announce   【 精華公佈欄 】",
 
   Boards, 0, M_BOARD,
-  "Boards    Ω 佈告討論區 Ω",
+  "Boards    【 佈告討論區 】",
+  "Boards     【 佈告討論區 】",
 
   Class, 0, M_BOARD,
-  "Class     φ 分組討論集 φ",
+  "Class     【 分組討論集 】",
+  "Class      【 分組討論集 】",
 
 #ifdef MY_FAVORITE
   MyFavorite, PERM_BASIC, M_MF,
-  "Favorite  η 我的最愛群 η",
+  "Favorite  【 我的最愛群 】",
+  "Favorite   【 我的最愛群 】",
 #endif
 
   menu_mail, 0, M_MMENU, 
-  "Mail      μ 信件典藏盒 μ",
+  "Mail      【 信件典藏盒 】",
+  "Mail       【 信件典藏盒 】",
 
   menu_talk, 0, M_TMENU,
-  "Talk      ω 休閒聊天地 ω",
+  "Talk      【 休閒聊天地 】",
+  "Talk       【 休閒聊天地 】",
 
   menu_user, 0, M_UMENU,
-  "User      π 個人工具坊 π",
+  "User      【 個人工具坊 】",
+  "User       【 個人工具坊 】",
 
 #ifdef HAVE_EXTERNAL
   menu_tool, 0, M_XMENU,
-  "Xyz       θ 特殊招待所 θ",
+  "Xyz       【 特殊招待所 】",
+  "Xyz        【 特殊招待所 】",
 #endif
 
 #if 0	/* itoc.010209: 選單按 s 直接進入 Select() 減少選單長度 */
   Select, 0, M_BOARD,
-  "Select    σ 選擇主看板 σ",
+  "Select    【 選擇主看板 】",
+  "Select     【 選擇主看板 】",
 #endif
 
   goodbye, 0, M_XMODE,
-  "Goodbye   δ 下次再會吧 δ",
+  "Goodbye   【 下次再會吧 】",
+  "Goodbye    【 下次再會吧 】",
 
   NULL, PERM_MENU + 'B', M_0MENU,
   "主功\能表"
@@ -998,6 +1141,17 @@ menu()
   int max, mmx;			/* current / previous menu max */
   int cmd, depth;
   char *str;
+  /* 040518.Lacool:增加選單光棒尾部修飾圖 */
+  char graphics[6][29]=
+      {"  ( ￣ c￣)y▂ξ            ",
+       "( ‵□′)───C＜─___-)|||",
+       "  (／‵⑸′)／~ ╧══╧    ",
+       "  (￣ε(#￣) #○=(一-一o)   ",
+       "  ˋ(′～‵\")ˊ            ",
+       " <(￣︶￣)>  a(￣み￣；)    "};
+
+  int graphics_show = time(0) % 6 ;
+  char graphics_clear[29]={"                            "};
 
   mode = MENU_LOAD | MENU_DRAW | MENU_FILM;
   menu = menu_main;
@@ -1165,9 +1319,27 @@ menu()
       Select();
       goto every_key;
 
+   /* 041023.Lacool:修改主選單按'0'進入系統管理選單 */
+   case '0':
+     if (bbsmode == M_0MENU)
+     {
+       if (HAS_PERM(PERM_ALLADMIN))
+       {
+         utmp_mode(M_AMENU);
+         menu->level = PERM_MENU + table[cc]->desc[0];
+         menu = (MENU *) menu_admin;
+         mode = MENU_LOAD | MENU_DRAW;
+         depth++;
+         continue;
+       }
+       goto every_key;
+     }
+     goto default_key; /* 若不在 M_0MENU 中按 r 的話，要視為一般按鍵 */
+
 #ifdef MY_FAVORITE
     /* itoc.010911: Favorite everywhere，不再限制是在 M_0MENU */
-    case 'f':
+    /* 041103.Lacool:拔掉按 f 直接進入我的最愛 */
+    //case 'f':
     case Ctrl('F'):
       if (cuser.userlevel)	/* itoc.010407: 要檢查權限 */
       {
@@ -1217,7 +1389,7 @@ default_key:
     default:
 
       if (cmd >= 'a' && cmd <= 'z')
-	cmd -= 0x20;
+	cmd ^= 0x20;			/* 變大寫 */
 
       cc = 0;
       for (;;)
@@ -1242,7 +1414,8 @@ default_key:
 	{
 	  mptr = table[cx];
 	  str = mptr->desc;
-	  prints("  (\033[1;36m%c\033[m)%s ", *str, str + 1);
+	  /* 040518.Lacool:修改為了光棒後端修飾圖，故每次要多清空 */
+	  prints("  (\033[1;36m%c\033[m)%s %s", *str, str + 1, graphics_clear);
 	}
 	else
 	{
@@ -1251,8 +1424,13 @@ default_key:
       }
       move(MENU_XPOS + cc, MENU_YPOS);
       mptr = table[cc];
+      /* wake.080601: 以 menu 中增加的 on over string 做輸出，並輸出光棒後端修飾圖 */
+      str = mptr->descover;
+      prints(" +" COLOR4 " \033[1;33m%s\033[m %s", str, graphics[graphics_show]);
+	  /* Old code
       str = mptr->desc;
-      prints(COLOR4 "> (%c)%s \033[m", *str, str + 1);
+	  prints(COLOR4 "> (%c)%s \033[m", *str, str + 1);
+	  */
       cx = cc;
 #else		/* 沒有 CURSOR_BAR */
       if (cx >= 0)
@@ -1270,8 +1448,13 @@ default_key:
 #ifdef CURSOR_BAR
       move(MENU_XPOS + cc, MENU_YPOS);
       mptr = table[cc];
-      str = mptr->desc;
+      /* wake.080601: 以 menu 中增加的 on over string 做輸出，並輸出光棒後端修飾圖 */
+      str = mptr->descover;
+      prints(" +" COLOR4 " \033[1;33m%s\033[m %s", str, graphics[graphics_show]);
+	  /* Old code
+      str = mptr->descr;
       prints(COLOR4 "> (%c)%s \033[m", *str, str + 1);
+	  */
 #else
       move(MENU_XPOS + cc, MENU_YPOS + 1);
 #endif
@@ -1282,3 +1465,4 @@ menu_key:
     cmd = vkey();
   }
 }
+

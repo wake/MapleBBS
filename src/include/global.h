@@ -95,6 +95,7 @@
 #define FN_DIR		".DIR"		/* index */
 #define FN_VCH		".VCH"		/* vote control header */
 #define FN_NOTE		"note"		/* 進板畫面 */
+#define FN_BOTTOM     ".BOTTOM"       /* 置底文章 index */ /* wakefield.081212: 修改為另一種置底結構 */
 
 
 /* ----------------------------------------------------- */
@@ -119,9 +120,7 @@
 #define FN_RUN_NOTE_ALL	"run/note.all"	/* 留言板 */
 #define FN_RUN_PAL	"run/pal.log"	/* 朋友超過上限記錄 */
 
-#ifdef LOG_ADMIN
-#define FN_RUN_PERM	"run/perm.log"	/* 站長修改權限記錄 */
-#endif
+#define FN_RUN_ADMIN	"run/admin.log"	/* 站長行為記錄 */
 
 #ifdef LOG_SONG_USIES
 #define FN_RUN_SONGUSIES "run/song_usies" /* 點歌記錄 */
@@ -189,7 +188,7 @@
 #define FN_ETC_TIP	"etc/tip"		/* 每日小秘訣 */
 
 #define FN_ETC_LOVELETTER "etc/loveletter"	/* 情書產生器文庫 */
-
+#define FN_ETC_CLASS    "etc/class"           /* 看板分類顏色 */ /* wake.081227: 自訂分類顏色 */
 
   /* --------------------------------------------------- */
   /* etc/ 目錄下 access crontrol list (ACL)		 */
@@ -250,7 +249,7 @@ UnAnonymous 站務 黑函滿天‧匿名現身 PERM_ALLBOARD PERM_SYSOP
 
 #define KEY_BKSP	8	/* 和 Ctrl('H') 相同 */
 #define KEY_TAB		9	/* 和 Ctrl('I') 相同 */
-#define KEY_ENTER	10	/* 和 Ctrl('M') Ctrl('J') 相同 */
+#define KEY_ENTER	10	/* 和 Ctrl('J') 相同 */
 #define KEY_ESC		27
 #define KEY_UP		-1
 #define KEY_DOWN	-2
@@ -268,7 +267,7 @@ UnAnonymous 站務 黑函滿天‧匿名現身 PERM_ALLBOARD PERM_SYSOP
 #define I_OTHERDATA	-32
 
 
-#define Ctrl(c)		(c & 037)
+#define Ctrl(c)		(c & '\037')
 #define Esc(c)		(c)		/* itoc.030824: 不 TRAP_ESC */
 #define isprint2(c)	(c >= ' ')
 
@@ -293,15 +292,15 @@ KEY_RIGHT fffffffd	KEY_LEFT  fffffffc
 ┌──┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┐
 │ HEX│00│01│02│03│04│05│06│07│08│09│0a│0b│0c│0d│0e│0f│
 ├──┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┤
-│ KEY│  │^A│^B│^C│^D│^E│^F│^G│^H│^I│^J│^K│^L│  │^N│^O│
+│ KEY│  │^A│^B│^C│^D│^E│^F│^G│^H│^I│^J│^K│^L│^M│^N│^O│
 ├──┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┤
 │ HEX│10│11│12│13│14│15│16│17│18│19│1a│1b│1c│1d│1e│1f│
 ├──┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┤
 │ KEY│^P│^Q│^R│^S│^T│^U│^V│^W│^X│^Y│^Z│Es│  │  │  │  │
 ├──┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┤
-│ HEX│20│21│22│23│24│25│26│27│28│29│2a│2b│2c│2d│2e│2f│	/* 22 是雙引號，避免 compile 錯誤 */
+│ HEX│20│21│22│23│24│25│26│27│28│29│2a│2b│2c│2d│2e│2f│	/* 0x22 是雙引號，避免 compile 錯誤 */
 ├──┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┤
-│ KEY│  │ !│XX│ #│ $│ %│ &│XX│ (│ )│ *│  │ ,│ -│ .│ /│	/* 27 是單引號，避免 compile 錯誤 */
+│ KEY│  │ !│XX│ #│ $│ %│ &│XX│ (│ )│ *│  │ ,│ -│ .│ /│	/* 0x27 是單引號，避免 compile 錯誤 */
 ├──┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┤
 │ HEX│30│31│32│33│34│35│36│37│38│39│3a│3b│3c│3d│3e│3f│
 ├──┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┤
@@ -324,11 +323,12 @@ KEY_RIGHT fffffffd	KEY_LEFT  fffffffc
 │ KEY│ p│ q│ r│ s│ t│ u│ v│ w│ x│ y│ z│ {│ |│ }│  │  │
 └──┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┘
 
-/* 特別注意: 值重覆 */
+/* 值重覆 */
 
-KEY_BKSP = Ctrl('H') == 08
-KEY_TAB == Ctrl('I') == 09
-KEY_ENTER == Ctrl('M') == Ctrl('J') == 0a
+KEY_BKSP == Ctrl('H') == 0x08
+'\t' == Ctrl('I') == 0x09
+'\n' == Ctrl('J') == 0x0a
+'\r' == Ctrl('M') == 0x0d
 
 #endif
 
@@ -338,8 +338,8 @@ KEY_ENTER == Ctrl('M') == Ctrl('J') == 0a
 /* ----------------------------------------------------- */
 
 
-#define QUOTE_CHAR1	'>'
-#define QUOTE_CHAR2	':'
+#define QUOTE_CHAR1	':'
+#define QUOTE_CHAR2	'>'
 
 #define	STR_SPACE	" \t\n\r"
 
@@ -348,6 +348,7 @@ KEY_ENTER == Ctrl('M') == Ctrl('J') == 0a
 #define	STR_POST1	"看板:"
 #define	STR_POST2	"站內:"
 #define	STR_REPLY	"Re: "
+#define	STR_FORWARD	"Fw: "
 
 #define STR_LINE	"\n\
 > -------------------------------------------------------------------------- <\n\n"
@@ -416,6 +417,16 @@ KEY_ENTER == Ctrl('M') == Ctrl('J') == 0a
 /* ----------------------------------------------------- */
 /* GLOBAL VARIABLE					 */
 /* ----------------------------------------------------- */
+
+
+/* 041122.Lacool:全域顏色設定變數 */
+#ifdef BOARD_SET
+  VAR CLS *board_cls;
+#endif
+
+#ifdef CLASS_SET
+  VAR CLS *class_cls;
+#endif
 
 
 VAR int bbsmode;		/* bbs operating mode, see modes.h */

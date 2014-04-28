@@ -90,20 +90,22 @@ song_swap(str, src, des)
   char *src;
   char *des;
 {
-  char *ptr, *tmp, buf[256];
+  char *ptr;
+  char buf[ANSILINELEN];
 
-  ptr = strstr(str, src);
-  if (ptr)
+  if (ptr = strstr(str, src))
   {
     *ptr = '\0';
-    tmp = ptr + strlen(src);
-    sprintf(buf, "%s%s%s", str, des, tmp);
+    ptr += strlen(src);
+    /* sprintf(buf, "%s%s%s", str, des, ptr); */
+    snprintf(buf, ANSILINELEN, "%s%s%s", str, des, ptr);	/* swap ¥i¯à·|¶W¹L ANSILINELEN */
     strcpy(str, buf);
+
     /* return 1; */
     return ++swaped;
   }
-  else
-    return 0;
+
+  return 0;
 }
 
 
@@ -112,10 +114,10 @@ song_quote(fpr, fpw, src, des, say)	/* ±q fpr Åª¥X¤º¤å¡A§â <~Src~> µ¥´À´«±¼¡A¼g¤
   FILE *fpr, *fpw;
   char *src, *des, *say;
 {
-  char buf[256];
+  char buf[ANSILINELEN];
 
   swaped = 0;
-  while (fgets(buf, 256, fpr))
+  while (fgets(buf, sizeof(buf), fpr))
   {
     if (strstr(buf, SONG_END))
       break;
@@ -468,7 +470,12 @@ song_order(xo)
 #endif
   strcpy(xpost.nick, xpost.owner);
   sprintf(xpost.title, "%s ÂIµ¹ %s", xpost.owner, des);
+
+  /* wakefield.081212: ²¾°£­ì¥»¸m©³ */
+  /*
   rec_bot(fpath, &xpost, sizeof(HDR));
+  */
+  rec_add(fpath, &xpost, sizeof(HDR));
 
   btime_update(brd_bno(BN_KTV));
 
@@ -527,7 +534,7 @@ song_send(xo)
   sprintf(xpost.title, "%s ÂIºqµ¹±z", cuser.userid);
   rec_add(fpath, &xpost, sizeof(HDR));
 
-  mail_hold(buf, acct.userid, 0);
+  mail_hold(buf, acct.userid, xpost.title, 0);
   m_biff(acct.userno);		/* ­Y¹ï¤è¦b½u¤W¡A«h­n³qª¾¦³·s«H */
 
   return song_head(xo);				/* acct_get ¥i¯à·| clear¡A©Ò¥H­n­«Ã¸ */
@@ -585,7 +592,7 @@ song_internet(xo)
   rc = bsmtp(fpath, "ÂIºqµ¹±z", rcpt, 0);
   vmsg(rc >= 0 ? msg_sent_ok : "«H¥óµLªk±H¹F¡A©³½Z³Æ¥÷¦b«H½c");
 
-  mail_hold(fpath, rcpt, rc);
+  mail_hold(fpath, rcpt, hdr->title, rc);
   unlink(fpath);
 
   return XO_FOOT;

@@ -70,7 +70,11 @@ xo_get_post(path, brd)		/* itoc.010910: °Ñ¦Ò xover.c xo_get()¡A¬° XoPost ¶q¨­¥´³
   BRD *brd;
 {
   XO *xo;
-  time_t chrono;
+
+  /* 081224.wake: ±À¤å±µ¤å¥¼ÅªÅã¥Ü§ïªk ver.2 */
+  //time_t chrono;
+  HDR hdr;
+
   int fd;
   int pos, locus, mid;	/* locus:¥ª«ü¼Ð mid:¤¤«ü¼Ð pos:¥k«ü¼Ð */
 
@@ -103,9 +107,14 @@ xo_get_post(path, brd)		/* itoc.010910: °Ñ¦Ò xover.c xo_get()¡A¬° XoPost ¶q¨­¥´³
 
     mid = locus + ((pos - locus) >> 1);
     lseek(fd, (off_t) (sizeof(HDR) * mid), SEEK_SET);
-    if (read(fd, &chrono, sizeof(time_t)) == sizeof(time_t))
+
+    /* 081224.wake: ±À¤å±µ¤å¥¼ÅªÅã¥Ü§ïªk ver.2 */
+    //if (read(fd, &chrono, sizeof(time_t)) == sizeof(time_t))
+    if (read(fd, &hdr, sizeof(HDR)) == sizeof(HDR))
     {
-      if (brh_unread(chrono))
+      /* 081224.wake: ±À¤å±µ¤å¥¼ÅªÅã¥Ü§ïªk ver.2 */
+      //if (brh_unread(chrono))
+      if (brh_unread(BMAX(hdr.chrono, hdr.stamp)))
 	pos = mid;
       else
 	locus = mid;
@@ -121,9 +130,14 @@ xo_get_post(path, brd)		/* itoc.010910: °Ñ¦Ò xover.c xo_get()¡A¬° XoPost ¶q¨­¥´³
   {
     /* ÀË¬d²Ä¤@½g¬O§_¤wÅª */
     lseek(fd, (off_t) 0, SEEK_SET);
-    if (read(fd, &chrono, sizeof(time_t)) == sizeof(time_t))
+
+    /* 081224.wake: ±À¤å±µ¤å¥¼ÅªÅã¥Ü§ïªk ver.2 */
+    //if (read(fd, &chrono, sizeof(time_t)) == sizeof(time_t))
+    if (read(fd, &hdr, sizeof(HDR)) == sizeof(HDR))
     {
-      if (brh_unread(chrono))	/* ­Y³s²Ä¤@½g¤]¥¼Åª¡Apos ½Õ¦^¥h²Ä¤@½g */
+      /* 081224.wake: ±À¤å±µ¤å¥¼ÅªÅã¥Ü§ïªk ver.2 */
+      //if (brh_unread(chrono))	/* ­Y³s²Ä¤@½g¤]¥¼Åª¡Apos ½Õ¦^¥h²Ä¤@½g */
+      if (brh_unread(BMAX(hdr.chrono, hdr.stamp)))
 	pos = 0;
     }
   }
@@ -175,6 +189,20 @@ xo_load(xo, recsiz)
     max = st.st_size / recsiz;
     if (max > 0)
     {
+
+      /* wakefield.081212: ¼W¥[¸m©³ */
+      char fpath[64];
+      int size;
+      int count = 0;    /* ¦³¦h¤Ö¸m©³¤å³¹ */
+
+      if (xo->key == XZ_POST)
+      {
+        brd_fpath(fpath, currboard, FN_BOTTOM);
+        if (!stat(fpath, &st))
+          max += (count = st.st_size / sizeof(HDR));
+      }
+      /* wakefield.fixend */
+
       pos = xo->pos;
       if (pos <= 0)
       {
@@ -191,7 +219,30 @@ xo_load(xo, recsiz)
       xo->top = top;
 
       lseek(fd, (off_t) (recsiz * top), SEEK_SET);
+
+      /* wakefield.081212: ¼W¥[¸m©³ */
+      /*
       read(fd, xo_pool, recsiz * XO_TALL);
+      */
+
+      /* wakefield.081212: ¼W¥[¸m©³ */
+      pos = recsiz * XO_TALL;
+      size = read(fd, xo_pool, pos);
+      if (count && (pos -= size))  /* ¦³¸m©³¤å³¹¦Ó¥BÁÙ¦³ªÅ¶¡ */
+      {
+        int fd2;
+        if ((fd2 = open(fpath, O_RDONLY)) >= 0)
+        {
+          top -= max - count;  /* «e­¶¤wÅª´X½g¸m©³¤å³¹ */
+          if (top < 0)
+            top = 0;
+          lseek(fd2, (off_t) (sizeof(HDR) * top), SEEK_SET);
+          read(fd2, xo_pool + size, pos);
+          close(fd2);
+        }
+      }
+      /* wakefield.fixend */
+
     }
     close(fd);
   }
@@ -885,19 +936,19 @@ xo_thread(xo, op)
   const int origpos = xo->pos, origtop = xo->top, max = xo->max;
   int pos, match, near, neartop;	/* Thor: neartop »P near ¦¨¹ï¥Î */
   int top, bottom, step, len;
-  HDR *pool, *fhdr;
+  HDR *pool, *hdr;
 
   match = XO_NONE;
   pos = origpos;
   top = origtop;
   pool = (HDR *) xo_pool;
-  fhdr = pool + (pos - top);
+  hdr = pool + (pos - top);
   near = 0;
   step = (op & RS_FORWARD) - 1;		/* (op & RS_FORWARD) ? 1 : -1 */
 
   if (op & RS_RELATED)
   {
-    tag = fhdr->title;
+    tag = hdr->title;
     if (op & RS_CURRENT)
     {
       query = currtitle;
@@ -990,16 +1041,15 @@ xo_thread(xo, op)
       if (bottom > max)
 	bottom = max;
 
-      fhdr = pool + (pos - top);
+      hdr = pool + (pos - top);
     }
     else
     {
-      fhdr += step;
+      hdr += step;
     }
 
 #ifdef HAVE_REFUSEMARK
-    if ((fhdr->xmode & POST_RESTRICT) &&
-      strcmp(fhdr->owner, cuser.userid) && !(bbstate & STAT_BM))
+    if (!chkrestrict(hdr))
       continue;
 #endif
 
@@ -1013,7 +1063,7 @@ xo_thread(xo, op)
 
     if (op & RS_MARKED)
     {
-      if (fhdr->xmode & POST_MARKED)
+      if (hdr->xmode & POST_MARKED)
       {
 	match = -1;
 	break;
@@ -1025,7 +1075,9 @@ xo_thread(xo, op)
 
     if (op & RS_UNREAD)
     {
-#define UNREAD_FUNC()   (op & RS_BOARD ? brh_unread(fhdr->chrono) : !(fhdr->xmode & MAIL_READ))
+/* 081224.wake: ±À¤å±µ¤å¥¼ÅªÅã¥Ü§ïªk ver.2 */
+//#define UNREAD_FUNC()   (op & RS_BOARD ? brh_unread(hdr->chrono) : !(hdr->xmode & MAIL_READ))
+#define UNREAD_FUNC()   (op & RS_BOARD ? brh_unread(BMAX(hdr->chrono, hdr->stamp)) : !(hdr->xmode & MAIL_READ))
       if (op & RS_FIRST)	/* ­º½g¥¼Åª */
       {
 	if (UNREAD_FUNC())
@@ -1052,7 +1104,7 @@ xo_thread(xo, op)
 
     if (op & (RS_TITLE | RS_THREAD))
     {
-      title = fhdr->title;	/* title «ü¦V [title] field */
+      title = hdr->title;	/* title «ü¦V [title] field */
       tag = str_ttl(title);	/* tag «ü¦V thread's subject */
 
       if (op & RS_THREAD)
@@ -1067,7 +1119,7 @@ xo_thread(xo, op)
     }
     else
     {
-      tag = fhdr->owner;	/* tag «ü¦V [owner] field */
+      tag = hdr->owner;	/* tag «ü¦V [owner] field */
     }
 
     if (((op & RS_RELATED) && !strncmp(tag, query, 40)) ||
@@ -1281,9 +1333,12 @@ xover(cmd)
 	}
 	else if (pos > num)
 	{
+      /* 040423.Lcaool:­×§ï¦b¬ÝªO¤å³¹³Ì«á¤@½g«ö KEY_DOWN ©Î KEY_PGDN ·|Â½¨ì³Ì«e */
+	  /*
 	  if (zone == XZ_POST)
-	    pos = num;	/* itoc.000304: ¾\Åª¨ì³Ì«á¤@½g«ö KEY_DOWN ©Î KEY_PGDN ¤£·|Â½¨ì³Ì«e */
+	    pos = num;	///* itoc.000304: ¾\Åª¨ì³Ì«á¤@½g«ö KEY_DOWN ©Î KEY_PGDN ¤£·|Â½¨ì³Ì«e
 	  else
+      */
 	    pos = (cmd || pos == num + XO_TALL) ? 0 : num;	/* itoc.020124: ­nÁ×§K¦pªG¦b­Ë¼Æ²Ä¤G­¶«ö KEY_PGDN¡A
 								   ¦Ó³Ì«á¤@­¶½g¼Æ¤Ó¤Ö·|ª½±µ¸õ¥h²Ä¤@­¶¡A¨Ï¥ÎªÌ·|
 								   ¤£ª¾¹D¦³³Ì«á¤@­¶¡A¬G¥ý¦b³Ì«á¤@¶µ°±¤@¤U */
@@ -1379,7 +1434,9 @@ xover(cmd)
     /* °ò¥»ªº´å¼Ð²¾°Ê routines				 */
     /* ------------------------------------------------- */
 
-    if (cmd == KEY_LEFT || cmd == 'e')
+    /* 040520.Lcaool:­×§ï¡A¥é[µL¦W] e ±µ¤å¡A¬G±N­ì¥» e °h¥X¤å³¹¦Cªíªº«öÁä©Þ±¼ */
+    //if (cmd == KEY_LEFT || cmd == 'e')
+    if (cmd == KEY_LEFT)
     {
       TagNum = 0;	/* itoc.050413: ±qºëµØ°Ï¦^¨ì¤å³¹¦Cªí®É­n²M°£ tag */
       return;
@@ -1396,7 +1453,7 @@ xover(cmd)
     {
       cmd = pos + 1 + XO_MOVE + XO_WRAP;
     }
-    else if (cmd == ' ' || cmd == KEY_PGDN || cmd == 'N')
+    else if (cmd == ' ' || cmd == KEY_PGDN /* 041030.Lacool:­×§ï¤å³¹¸m©³«öÁä || cmd == 'N' */)
     {
       cmd = pos + XO_TALL + XO_MOVE;
     }
@@ -1508,8 +1565,8 @@ xover(cmd)
 /* ----------------------------------------------------- */
 
 
-#ifdef	EVERY_Z
-static int z_status = 0;	/* ¶i¤J´X¼h */
+#ifdef EVERY_Z
+int z_status = 0;	/* ¶i¤J´X¼h */
 
 int
 every_Z(zone)
@@ -1536,9 +1593,8 @@ every_Z(zone)
     break;
 
   case 'b':
-    if (xz[XZ_POST - XO_ZONE].xo)	/* ­Y¤w¿ï©w¬ÝªO¡A¶i¤J¬ÝªO¡A§_«h¨ì¬ÝªO¦Cªí */
+    if (currbno >= 0)	/* ­Y¤w¿ï©w¬ÝªO¡A¶i¤J¬ÝªO¡A§_«h¨ì¬ÝªO¦Cªí */
     {
-      XoPost(currbno);
       cmd = XZ_POST;
       break;
     }
@@ -1574,6 +1630,9 @@ every_Z(zone)
     z_status--;
     return XO_FOOT;		/* ­Y¦b xover() ¤¤¨ú®ø©I¥s every_Z() «h°e¦^ XO_FOOT §Y¥i­«Ã¸ */
   }
+
+  if (cmd == XZ_POST)
+    XoPost(currbno);
 
 #ifdef MY_FAVORITE
   if (zone == XZ_POST && (cmd == XZ_CLASS || cmd == XZ_MF))
@@ -1742,6 +1801,30 @@ xo_cursor(ch, pagemax, num, pageno, cur, redraw)
     *cur = num % XO_TALL;
     *redraw = 1;
     break;
+
+  default:
+    if (ch >= '1' && ch <= '9')
+    {
+      int pos;
+      char buf[6];
+
+      buf[0] = ch;
+      buf[1] = '\0';
+      vget(b_lines, 0, "¸õ¦Ü²Ä´X¶µ¡G", buf, sizeof(buf), GCARRY);
+
+      pos = atoi(buf);
+
+      if (pos > 0)
+      {
+	pos--;
+	if (pos >num)
+	  pos = num;
+	*pageno = pos / XO_TALL;
+	*cur = pos % XO_TALL;
+      }
+
+      *redraw = 1;	/* ´Nºâ¨S¦³´«­¶¡A¤]­n­«Ã¸ feeter */
+    }
   }
 
   return ch;
@@ -1760,3 +1843,4 @@ xo_help(path)			/* itoc.021122: »¡©ú¤å¥ó */
   /* itoc.030510: ©ñ¨ì so ¸Ì­± */
   DL_func("bin/help.so:vaHelp", path);
 }
+

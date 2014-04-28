@@ -33,6 +33,22 @@ cmpchrono(hdr)
 }
 
 
+/* 081224.wake: 推文接文未讀顯示改法 ver.2 */
+static void
+change_stamp(folder, hdr)
+  char *folder;
+  HDR *hdr;
+{
+  HDR buf;
+
+  /* 為了確定新造出來的 stamp 也是 unique (不和既有的 chrono 重覆)，
+     就產生一個新的檔案，該檔案隨便 link 即可。
+     這個多產生出來的垃圾會在 expire 被 sync 掉 (因為不在 .DIR 中) */
+  hdr_stamp(folder, HDR_LINK | 'A', &buf, "etc/stamp");
+  hdr->stamp = buf.chrono;
+}
+
+
 /* ----------------------------------------------------- */
 /* 改良 innbbsd 轉出信件、連線砍信之處理程序		 */
 /* ----------------------------------------------------- */
@@ -89,7 +105,7 @@ cancel_post(hdr)
 }
 
 
-static inline int
+static inline int		/* 回傳文章 size 去扣錢 */
 move_post(hdr, folder, by_bm)	/* 將 hdr 從 folder 搬到別的板 */
   HDR *hdr;
   char *folder;
@@ -114,18 +130,24 @@ move_post(hdr, folder, by_bm)	/* 將 hdr 從 folder 搬到別的板 */
     brd_fpath(fnew, board, fn_dir);
     hdr_stamp(fnew, HDR_LINK | 'A', &post, fpath);
 
-    /* 直接複製 trailing data */
+    /* 直接複製 trailing data：owner(含)以下所有欄位 */
 
-    memcpy(post.owner, hdr->owner, TTLEN + 140);
+    memcpy(post.owner, hdr->owner, sizeof(HDR) -
+      (sizeof(post.chrono) + sizeof(post.xmode) + sizeof(post.xid) + sizeof(post.xname)));
 
     if (by_bm)
       sprintf(post.title, "%-13s%.59s", cuser.userid, hdr->title);
-    else if (!stat(fpath, &st))
-      by_bm = st.st_size;
 
+    /* wakefield.081212: 移除原本置底 */
+    /*
     rec_bot(fnew, &post, sizeof(HDR));
+    */
+    rec_add(fnew, &post, sizeof(HDR));
+
     btime_update(brd_bno(board));
   }
+
+  by_bm = stat(fpath, &st) ? 0 : st.st_size;
 
   unlink(fpath);
   btime_update(currbno);
@@ -157,18 +179,16 @@ static int checknum = 0;
 
 
 static inline int
-checksum_add(str)		/* 回傳本行文字的 checksum */
+checksum_add(str)		/* 回傳本列文字的 checksum */
   char *str;
 {
-  int sum, i, len;
-  char *ptr;
+  int i, len, sum;
 
-  ptr = str;
-  len = strlen(str) >> 2;	/* 只算前四分之一 */
+  len = strlen(str);
 
-  sum = 0;
-  for (i = 0; i < len; i++)
-    sum += *ptr++;
+  sum = len;	/* 當字數太少時，前四分之一很可能完全相同，所以將字數也加入 sum 值 */
+  for (i = len >> 2; i > 0; i--)	/* 只算前四分之一字元的 sum 值 */
+    sum += *str++;
 
   return sum;
 }
@@ -214,7 +234,7 @@ checksum_find(fpath)
   sum = 0;
   if (fp = fopen(fpath, "r"))
   {
-    for (i = -4;;)	/* 前四列是檔頭 */
+    for (i = -(LINE_HEADER + 1);;)	/* 前幾列是檔頭 */
     {
       if (!fgets(buf, ANSILINELEN, fp))
 	break;
@@ -265,7 +285,13 @@ check_crosspost(fpath, bno)
     strcpy(hdr.owner, cuser.userid);
     strcpy(hdr.nick, cuser.username);
     sprintf(hdr.title, "%s %s Cross-Post", cuser.userid, Now());
+
+    /* wakefield.081212: 移除原本置底 */
+    /*
     rec_bot(folder, &hdr, sizeof(HDR));
+    */
+    rec_add(folder, &hdr, sizeof(HDR));
+
     btime_update(brd_bno(BN_SECURITY));
 
     bbstate &= ~STAT_POST;
@@ -289,6 +315,27 @@ check_crosspost(fpath, bno)
 /* ----------------------------------------------------- */
 /* 發表、回應、編輯、轉錄文章				 */
 /* ----------------------------------------------------- */
+
+
+int
+is_author(hdr)
+  HDR *hdr;
+{
+  /* 這裡沒有檢查是不是 guest，注意使用此函式時要特別考慮 guest 情況 */
+
+  /* itoc.070426: 當帳號被清除後，新註冊相同 ID 的帳號並不擁有過去該 ID 發表的文章之所有權 */
+  return !strcmp(hdr->owner, cuser.userid) && (hdr->chrono > cuser.firstlogin);
+}
+
+
+#ifdef HAVE_REFUSEMARK
+int
+chkrestrict(hdr)
+  HDR *hdr;
+{
+  return !(hdr->xmode & POST_RESTRICT) || is_author(hdr) || (bbstate & STAT_BM);
+}
+#endif  
 
 
 #ifdef HAVE_ANONYMOUS
@@ -319,7 +366,12 @@ do_unanonymous(fpath)
   strcpy(hdr.owner, cuser.userid);
   strcpy(hdr.title, ve_title);
 
+  /* wakefield.081212: 移除原本置底 */
+  /*
   rec_bot(folder, &hdr, sizeof(HDR));
+  */
+  rec_add(folder, &hdr, sizeof(HDR));
+
   btime_update(brd_bno(BN_UNANONYMOUS));
 }
 #endif
@@ -330,11 +382,18 @@ do_post(xo, title)
   XO *xo;
   char *title;
 {
-  /* Thor.981105: 進入前需設好 curredit */
-  HDR hdr, buf;
-  char fpath[64], *folder, *nick, *rcpt;
+  /* Thor.981105: 進入前需設好 curredit 及 quote_file */
+
+  /* 081224.wake: 推文接文未讀顯示改法 ver.2 */
+  //HDR hdr, buf;
+  HDR hdr;
+
+  char fpath[64], rcpt_temp[32], *folder, *nick, *rcpt;
   int mode;
-  time_t spendtime, prev, chrono;
+
+  /* 081224.wake: 推文接文未讀顯示改法 ver.2 */
+  //time_t spendtime, prev, chrono;
+  time_t spendtime;
 
   if (!(bbstate & STAT_POST))
   {
@@ -361,18 +420,79 @@ do_post(xo, title)
   else		/* itoc.020113: 新文章選擇標題分類 */
   {
 #define NUM_PREFIX 6
-    char *prefix[NUM_PREFIX] = {"[公告] ", "[新聞] ", "[閒聊] ", "[文件] ", "[問題] ", "[測試] "};
 
-    move(21, 0);
-    outs("類別：");
-    for (mode = 0; mode < NUM_PREFIX; mode++)
-      prints("%d.%s", mode + 1, prefix[mode]);
+/* wake.080606: 新增自訂發文類別 */
+#ifdef PREFIX_EDIT
+    if ((currbattr & BRD_PREFIX) && !(currbattr & BRD_PREFIX_EDIT))
+    {
+#endif
+      char *prefix[NUM_PREFIX] = {"公告", "新聞", "閒聊", "文件", "問題", "測試"};
 
-    mode = vget(20, 0, "請選擇文章類別（按 Enter 跳過）：", fpath, 3, DOECHO) - '1';
-    if (mode >= 0 && mode < NUM_PREFIX)		/* 輸入數字選項 */
-      rcpt = prefix[mode];
-    else					/* 空白跳過 */
+      move(21, 0);
+      outs("類別：");
+      for (mode = 0; mode < NUM_PREFIX; mode++)
+        prints("%d.%s ", mode + 1, prefix[mode]);
+
+      mode = vget(20, 0, "請選擇文章類別（按 Enter 跳過）：", fpath, 3, DOECHO) - '1';
+      if (mode >= 0 && mode < NUM_PREFIX)    /* 輸入數字選項 */
+      {
+        sprintf(rcpt_temp, "[%s]", prefix[mode]);
+        rcpt = rcpt_temp;
+      }
+      else          /* 空白跳過 */
+        rcpt = NULL;
+/* wake.080606: 新增自訂發文類別 */
+#ifdef PREFIX_EDIT
+    }
+    else if ((currbattr & BRD_PREFIX) && (currbattr & BRD_PREFIX_EDIT))
+    {
+      FILE *fp;
+      char prefix[NUM_PREFIX][10];
+
+      brd_fpath(fpath, currboard, "prefix");
+      if (fp = fopen(fpath, "r"))
+      {
+        int mod, mode_fix[6];
+
+        move(21, 0);
+        outs("類別：");
+        for (mode = mod = 0; mode < NUM_PREFIX; mode++)
+        {
+          if (fscanf(fp, "%9s", fpath) != 1)
+            break;
+          strcpy(prefix[mode], fpath);
+
+          if (strcmp("---------", fpath))
+          {
+            prints("%d.%s ", mod + 1, fpath);
+            mode_fix[mod++] = mode + 1;
+          }
+          else
+            continue;
+        }
+   
+        fclose(fp);
+
+        if(mod>0)
+        {
+          mode = vget(20, 0, "請選擇文章類別（按 Enter 跳過）：", fpath, 3, DOECHO) - '1';
+          if (mode >= 0 && mode < mod)       /* 輸入數字選項 */
+          {
+            sprintf(rcpt_temp, "[%s]", prefix[mode_fix[mode] - 1]);
+            rcpt = rcpt_temp;
+          }
+          else                                      /* 空白跳過 */
+            rcpt = NULL;
+        }
+        else
+          rcpt = NULL;
+      }
+      else
+        rcpt = NULL;
+    }
+    else
       rcpt = NULL;
+#endif
   }
 
   if (!ve_subject(21, title, rcpt))
@@ -438,16 +558,25 @@ do_post(xo, title)
   strcpy(hdr.nick, nick);
   strcpy(hdr.title, title);
 
+  /* wakefield.081212: 移除原本置底 */
+  /*
   rec_bot(folder, &hdr, sizeof(HDR));
+  */
+  rec_add(folder, &hdr, sizeof(HDR));
+
   btime_update(currbno);
 
   if (mode & POST_OUTGO)
     outgo_post(&hdr, currboard);
 
 #if 1	/* itoc.010205: post 完文章就記錄，使不出現未閱讀的＋號 */
-  chrono = hdr.chrono;
-  prev = ((mode = rec_num(folder, sizeof(HDR)) - 2) >= 0 && !rec_get(folder, &buf, sizeof(HDR), mode)) ? buf.chrono : chrono;
-  brh_add(prev, chrono, chrono);
+
+  /* 081224.wake: 推文接文未讀顯示改法 ver.2 */
+  //chrono = hdr.chrono;
+  //prev = ((mode = rec_num(folder, sizeof(HDR)) - 2) >= 0 && !rec_get(folder, &buf, sizeof(HDR), mode)) ? buf.chrono : chrono;
+  //brh_add(prev, chrono, chrono);
+  post_history(xo, &hdr);
+
 #endif
 
   clear();
@@ -497,12 +626,10 @@ do_reply(xo, hdr)
   switch (vans("▲ 回應至 (F)看板 (M)作者信箱 (B)二者皆是 (Q)取消？[F] "))
   {
   case 'm':
+    hdr_fpath(quote_file, xo->dir, hdr);
     return do_mreply(hdr, 0);
 
   case 'q':
-    /* Thor: 解決 Gao 發現的 bug，先假裝 reply 文章，卻按 q 取消，
-       然後去編輯檔案，你就會發現跑出是否引用原文的選項了 */
-    *quote_file = '\0';
     return XO_FOOT;
 
   case 'b':
@@ -516,6 +643,7 @@ do_reply(xo, hdr)
   if (hdr->xmode & (POST_INCOME | POST_OUTGO))
     curredit |= EDIT_OUTGO;
 
+  hdr_fpath(quote_file, xo->dir, hdr);
   strcpy(quote_user, hdr->owner);
   strcpy(quote_nick, hdr->nick);
   return do_post(xo, hdr->title);
@@ -533,12 +661,10 @@ post_reply(xo)
     hdr = (HDR *) xo_pool + (xo->pos - xo->top);
 
 #ifdef HAVE_REFUSEMARK
-    if ((hdr->xmode & POST_RESTRICT) &&
-      strcmp(hdr->owner, cuser.userid) && !(bbstate & STAT_BM))
+    if (!chkrestrict(hdr))
       return XO_NONE;
 #endif
 
-    hdr_fpath(quote_file, xo->dir, hdr);
     return do_reply(xo, hdr);
   }
   return XO_NONE;
@@ -550,6 +676,7 @@ post_add(xo)
   XO *xo;
 {
   curredit = EDIT_OUTGO;
+  *quote_file = '\0';
   return do_post(xo, NULL);
 }
 
@@ -613,12 +740,13 @@ hdr_outs(hdr, cc)		/* print HDR's subject */
   HDR *hdr;
   int cc;			/* 印出最多 cc - 1 字的標題 */
 {
-  /* 回覆/原創/閱讀中的同主題回覆/閱讀中的同主題原創 */
-  static char *type[4] = {"Re", "◇", "\033[1;33m=>", "\033[1;32m◆"};
+  /* 回覆/轉錄/原創/閱讀中的同主題回覆/閱讀中的同主題轉錄/閱讀中的同主題原創 */
+  static char *type[6] = {"Re", "Fw", "◇", "\033[1;33m=>", "\033[1;33m=>", "\033[1;32m◆"};
   uschar *title, *mark;
   int ch, len;
+  int in_chi;		/* 1: 在中文字中 */
 #ifdef HAVE_DECLARE
-  int square;
+  int square;		/* 1: 要處理方括 */
 #endif
 #ifdef CHECK_ONLINE
   UTMP *online;
@@ -647,11 +775,25 @@ hdr_outs(hdr, cc)		/* print HDR's subject */
 
   mark = hdr->owner;
   len = IDLEN + 1;
+  in_chi = 0;
 
   while (ch = *mark)
   {
-    if ((--len <= 0) || (ch == '@'))	/* 站外的作者把 '@' 換成 '.' */
+    if (--len <= 0)
+    {
+      /* 把超過 len 長度的部分直接切掉 */
+      /* itoc.060604.註解: 如果剛好切在中文字的一半就會出現亂碼，不過這情況很少發生，所以就不管了 */
       ch = '.';
+    }
+    else
+    {
+      /* 站外的作者把 '@' 換成 '.' */
+      if (in_chi || IS_ZHC_HI(ch))	/* 中文字尾碼是 '@' 的不算 */
+	in_chi ^= 1;
+      else if (ch == '@')
+	ch = '.';
+    }
+      
     outc(ch);
 
     if (ch == '.')
@@ -661,9 +803,7 @@ hdr_outs(hdr, cc)		/* print HDR's subject */
   }
 
   while (len--)
-  {
     outc(' ');
-  }
 
 #ifdef CHECK_ONLINE
   if (online)
@@ -674,11 +814,12 @@ hdr_outs(hdr, cc)		/* print HDR's subject */
   /* 印出標題的種類					 */
   /* --------------------------------------------------- */
 
+  /* len: 標題是 type[] 裡面的那一種 */
   title = str_ttl(mark = hdr->title);
-  ch = title == mark;
+  len = (title == mark) ? 2 : (*mark == 'R') ? 0 : 1;
   if (!strcmp(currtitle, title))
-    ch += 2;
-  outs(type[ch]);
+    len += 3;
+  outs(type[len]);
   outc(' ');
 
   /* --------------------------------------------------- */
@@ -688,8 +829,8 @@ hdr_outs(hdr, cc)		/* print HDR's subject */
   mark = title + cc;
 
 #ifdef HAVE_DECLARE	/* Thor.980508: Declaration, 嘗試使某些title更明顯 */
-  square = 0;		/* 0:不處理方括 1:要處理方括 */
-  if (ch < 2)
+  square = in_chi = 0;
+  if (len < 3)
   {
     if (*title == '[')
     {
@@ -699,29 +840,33 @@ hdr_outs(hdr, cc)		/* print HDR's subject */
   }
 #endif
 
-  while ((cc = *title++) && (title < mark))
+  /* 把超過 cc 長度的部分直接切掉 */
+  /* itoc.060604.註解: 如果剛好切在中文字的一半就會出現亂碼，不過這情況很少發生，所以就不管了 */
+  while ((ch = *title++) && (title < mark))
   {
 #ifdef HAVE_DECLARE
     if (square)
     {
-      if (square & 0x80 || cc & 0x80)	/* 中文字的第二碼若是 ']' 不算是方括 */
-	square ^= 0x80;
-      else if (cc == ']')
+      if (in_chi || IS_ZHC_HI(ch))	/* 中文字的第二碼若是 ']' 不算是方括 */
+      {
+	in_chi ^= 1;
+      }
+      else if (ch == ']')
       {
 	outs("]\033[m");
-	square = 0;
+	square = 0;			/* 只處理一組方括，方括已經處理完了 */
 	continue;
       }
     }
 #endif
 
-    outc(cc);
+    outc(ch);
   }
 
 #ifdef HAVE_DECLARE
-  if (square || ch >= 2)	/* Thor.980508: 變色還原用 */
+  if (square || len >= 3)	/* Thor.980508: 變色還原用 */
 #else
-  if (ch >= 2)
+  if (len >= 3)
 #endif
     outs("\033[m");
 
@@ -757,16 +902,30 @@ post_load(xo)
 
 
 static int
-post_attr(fhdr)
-  HDR *fhdr;
+post_attr(hdr)
+  HDR *hdr;
 {
   int mode, attr;
 
-  mode = fhdr->xmode;
+  mode = hdr->xmode;
 
+  /* 已閱讀為小寫，未閱讀為大寫 */
   /* 由於置底文沒有閱讀記錄，所以視為已讀 */
-  attr = !(mode & POST_BOTTOM) && brh_unread(fhdr->chrono) ? 0 : 0x20;	/* 已閱讀為小寫，未閱讀為大寫 */  
+  /* 加密文章視為已讀 */
+#ifdef HAVE_REFUSEMARK
+  /* 081224.wake: 推文接文未讀顯示改法 ver.2 */
+  //attr = ((mode & POST_BOTTOM) || !brh_unread(hdr->chrono) || !chkrestrict(hdr)) ? 0x20 : 0;
+  attr = ((mode & POST_BOTTOM) || !brh_unread(BMAX(hdr->chrono, hdr->stamp)) || !chkrestrict(hdr)) ? 0x20 : 0;
+#else
+  /* 081224.wake: 推文接文未讀顯示改法 ver.2 */
+  //attr = ((mode & POST_BOTTOM) || !brh_unread(hdr->chrono)) ? 0x20 : 0;
+  attr = ((mode & POST_BOTTOM) || !brh_unread(BMAX(hdr->chrono, hdr->stamp))) ? 0x20 : 0;
+#endif
 
+  /* wakefield.081212: 修改為另一種置底結構 */
+  if (mode & POST_BOTTOM)
+    attr |= 'N';
+  else
 #ifdef HAVE_REFUSEMARK
   if (mode & POST_RESTRICT)
     attr |= 'X';  
@@ -792,6 +951,9 @@ post_item(num, hdr)
   HDR *hdr;
 {
 #ifdef HAVE_SCORE
+
+  /* 041021.Lacool:修改推文為 01～99 */
+  /*
   static char scorelist[36] =
   {
     '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
@@ -799,17 +961,45 @@ post_item(num, hdr)
     'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T',
     'U', 'V', 'W', 'X', 'Y', 'Z'
   };
+  */
 
-  prints("%6d%c%c", (hdr->xmode & POST_BOTTOM) ? -1 : num, tag_char(hdr->chrono), post_attr(hdr));
+  /* wakefield.081212: 修改為另一種置底結構 */
+  if (hdr->xmode & POST_BOTTOM2)   /* 謄本才需要標「重要」 */
+    //prints("  重要%c%c", tag_char(hdr->chrono), post_attr(hdr));
+    prints("  \033[1;33;41m重要\033[m");
+  else
+
+  /* 041021.Lacool:修改看板文章列表 [分數]、[標記] 顯示順序 */
+  //prints("%6d%c%c", (hdr->xmode & POST_BOTTOM) ? -1 : num, tag_char(hdr->chrono), post_attr(hdr));
+
+  /* wakefield.081212: 改置底的顯示 */
+  /* prints("%6d", (hdr->xmode & POST_BOTTOM) ? -1 : num); */
+  prints("%6d", num);
+
   if (hdr->xmode & POST_SCORE)
   {
     num = hdr->score;
-    prints("\033[1;3%cm%c\033[m ", num >= 0 ? '1' : '2', scorelist[abs(num)]);
+    //prints("\033[1;3%cm%c\033[m ", num >= 0 ? '1' : '2', scorelist[abs(num)]);
+
+    /* 041021.Lacool:修改推文為 01～99，看板文章列表 [分數]、[標記] 顯示順序 */
+    prints("\033[33m%02d\033[m", abs(num));
+
   }
   else
   {
     outs("  ");
   }
+
+  /* wakefield.081212: 改置底、mark 的顯示 */
+  if (hdr->xmode & POST_BOTTOM)
+    prints("\033[1;31m%c\033[m%c", post_attr(hdr), tag_char(hdr->chrono));
+  else if (hdr->xmode & POST_MARKED)
+    prints("\033[1;36m%c\033[m%c", post_attr(hdr), tag_char(hdr->chrono));
+  else
+
+  /* 041021.Lacool:修改看板文章列表 [分數]、[標記] 顯示順序 */
+  prints("%c%c", post_attr(hdr), tag_char(hdr->chrono));
+
   hdr_outs(hdr, d_cols + 46);	/* 少一格來放分數 */
 #else
   prints("%6d%c%c ", (hdr->xmode & POST_BOTTOM) ? -1 : num, tag_char(hdr->chrono), post_attr(hdr));
@@ -822,7 +1012,7 @@ static int
 post_body(xo)
   XO *xo;
 {
-  HDR *fhdr;
+  HDR *hdr;
   int num, max, tail;
 
   max = xo->max;
@@ -840,7 +1030,7 @@ post_body(xo)
     return XO_QUIT;
   }
 
-  fhdr = (HDR *) xo_pool;
+  hdr = (HDR *) xo_pool;
   num = xo->top;
   tail = num + XO_TALL;
   if (max > tail)
@@ -849,7 +1039,7 @@ post_body(xo)
   move(3, 0);
   do
   {
-    post_item(++num, fhdr++);
+    post_item(++num, hdr++);
   } while (num < max);
   clrtobot();
 
@@ -883,6 +1073,8 @@ post_visit(xo)
   ans = vans("設定所有文章 (U)未讀 (V)已讀 (W)前已讀後未讀 (Q)取消？[Q] ");
   if (ans == 'v' || ans == 'u' || ans == 'w')
   {
+    int pos; /* wakefield.081212: 增加置底 */
+
     row = xo->top;
     max = xo->max - row + 3;
     if (max > b_lines)
@@ -891,35 +1083,97 @@ post_visit(xo)
     hdr = (HDR *) xo_pool + (xo->pos - row);
     /* brh_visit(ans == 'w' ? hdr->chrono : ans == 'u'); */
     /* weiyu.041010: 在置底文上選 w 視為全部已讀 */
+    /* wakefield.081212: 增加置底 */
+    /*
     brh_visit((ans == 'u') ? 1 : (ans == 'w' && !(hdr->xmode & POST_BOTTOM)) ? hdr->chrono : 0);
+    */
+
+    /* wakefield.081212: 增加置底 */
+    pos = xo->pos - row;
+    /* weiyu.20041010: 在置底文上選 w 視為全部已讀 */
+    brh_visit(ans == 'w' ? hdr[pos].xmode & POST_BOTTOM2 ? 0 :
+                           hdr[pos].chrono : ans == 'u');
+    /* wakefield.fixend */
 
     hdr = (HDR *) xo_pool;
     row = 3;
+
+    /* 041021.Lacool:修改文章列表標題位置(7 -> 8) */
+    /*
     do
     {
       move(row, 7);
       outc(post_attr(hdr++));
     } while (++row < max);
+    */
+
+    /* wakefield.081212: 更改 mark 顏色 */
+    return post_body(xo);
   }
   return XO_FOOT;
 }
 
 
-static void
-post_history(xo, fhdr)		/* 將 fhdr 這篇加入 brh */
+/* 081224.wake: 推文接文未讀顯示改法 ver.2 */
+void
+post_history(xo, hdr)          /* 將 hdr 這篇加入 brh */
   XO *xo;
-  HDR *fhdr;
+  HDR *hdr;
+{
+  int fd;
+  time_t prev, chrono, next, this;
+  HDR buf;
+
+  chrono = BMAX(hdr->chrono, hdr->stamp);
+  if (!brh_unread(chrono))      /* 如果已在 brh 中，就無需動作 */
+    return;
+
+  if ((fd = open(xo->dir, O_RDONLY)) >= 0)
+  {
+    prev = chrono + 1;
+    next = chrono - 1;
+
+    while (read(fd, &buf, sizeof(HDR)) == sizeof(HDR))
+    {
+      this = BMAX(buf.chrono, buf.stamp);
+
+      if (chrono - this < chrono - prev)
+        prev = this;
+      else if (this - chrono < next - chrono)
+        next = this;
+    }
+    close(fd);
+
+    if (prev > chrono)      /* 沒有下一篇 */
+      prev = chrono;
+    if (next < chrono)      /* 沒有上一篇 */
+      next = chrono;
+
+    brh_add(prev, chrono, next);
+  }
+}
+
+
+/* 081224.wake: 推文接文未讀顯示改法 ver.2 */
+/*
+static void
+post_history(xo, hdr)		/* 將 hdr 這篇加入 brh *
+  XO *xo;
+  HDR *hdr;
 {
   time_t prev, chrono, next;
   int pos, top;
   char *dir;
   HDR buf;
 
-  if (fhdr->xmode & POST_BOTTOM)	/* 置底文不加入閱讀記錄 */
+  /* wakefield.081212: 移除原本置底 *
+  /*
+  if (hdr->xmode & POST_BOTTOM)	/* 置底文不加入閱讀記錄 *
     return;
+  *
 
-  chrono = fhdr->chrono;
-  if (!brh_unread(chrono))	/* 如果已在 brh 中，就無需動作 */
+  chrono = hdr->chrono;
+  if (!brh_unread(chrono))	/* 如果已在 brh 中，就無需動作 *
     return;
 
   dir = xo->dir;
@@ -929,11 +1183,11 @@ post_history(xo, fhdr)		/* 將 fhdr 這篇加入 brh */
   pos--;
   if (pos >= top)
   {
-    prev = fhdr[-1].chrono;
+    prev = hdr[-1].chrono;
   }
   else
   {
-    /* amaki.040302.註解: 在畫面以上，只好讀硬碟 */
+    /* amaki.040302.註解: 在畫面以上，只好讀硬碟 *
     if (!rec_get(dir, &buf, sizeof(HDR), pos))
       prev = buf.chrono;
     else
@@ -943,11 +1197,11 @@ post_history(xo, fhdr)		/* 將 fhdr 這篇加入 brh */
   pos += 2;
   if (pos < top + XO_TALL && pos < xo->max)
   {
-    next = fhdr[1].chrono;
+    next = hdr[1].chrono;
   }
   else
   {
-    /* amaki.040302.註解: 在畫面以下，只好讀硬碟 */
+    /* amaki.040302.註解: 在畫面以下，只好讀硬碟 *
     if (!rec_get(dir, &buf, sizeof(HDR), pos))
       next = buf.chrono;
     else
@@ -956,6 +1210,7 @@ post_history(xo, fhdr)		/* 將 fhdr 這篇加入 brh */
 
   brh_add(prev, chrono, next);
 }
+*/
 
 
 static int
@@ -975,8 +1230,7 @@ post_browse(xo)
     xmode = hdr->xmode;
 
 #ifdef HAVE_REFUSEMARK
-    if ((xmode & POST_RESTRICT) && 
-      strcmp(hdr->owner, cuser.userid) && !(bbstate & STAT_BM))
+    if (!chkrestrict(hdr))
       break;
 #endif
 
@@ -999,7 +1253,6 @@ re_key:
     case 'r':
       if (bbstate & STAT_POST)
       {
-	strcpy(quote_file, fpath);
 	if (do_reply(xo, hdr) == XO_INIT)	/* 有成功地 post 出去了 */
 	  return post_init(xo);
       }
@@ -1017,8 +1270,19 @@ re_key:
       break;
 
 #ifdef HAVE_SCORE
+    /* wake.080611: 改推文為 x */
+    case 'x':
+    /*
     case '%':
+    */
       post_score(xo);
+      return post_init(xo);
+#endif
+
+  /* wake.080611: 仿[無名] e 文 */
+#ifdef HAVE_EPOST
+    case 'e':
+      post_epost(xo);
       return post_init(xo);
 #endif
 
@@ -1122,6 +1386,11 @@ post_tag(xo)
   cur = pos - xo->top;
   hdr = (HDR *) xo_pool + cur;
 
+  /* wakefield.081212: 增加置底 */
+  if (hdr->xmode & POST_BOTTOM2)   /* 禁止標籤謄本 */
+    return XO_NONE;
+  /* wakefield.fixend */
+
   if (xo->key == XZ_XPOST)
     pos = hdr->xid;
 
@@ -1142,7 +1411,7 @@ post_switch(xo)
 {
   int bno;
   BRD *brd;
-  char bname[16];
+  char bname[BNLEN + 1];
 
   if (brd = ask_board(bname, BRD_R_BIT, NULL))
   {
@@ -1165,7 +1434,7 @@ post_cross(xo)
   XO *xo;
 {
   /* 來源看板 */
-  char *dir;
+  char *dir, *ptr;
   HDR *hdr, xhdr;
 
   /* 欲轉去的看板 */
@@ -1174,12 +1443,12 @@ post_cross(xo)
   char xboard[BNLEN + 1], xfolder[64];
   HDR xpost;
 
-  int tag, rc, locus;
-  int method;		/* 0:轉錄文章 1:原文轉載 */
+  int tag, rc, locus, finish;
+  int method;		/* 0:原文轉載 1:從公開看板/精華區/信箱轉錄文章 2:從秘密看板轉錄文章 */
   usint tmpbattr;
   char tmpboard[BNLEN + 1];
-  char fpath[64], buf[64];
-  FILE *fp;
+  char fpath[64], buf[ANSILINELEN];
+  FILE *fpr, *fpw;
 
   if (!cuser.userlevel)	/* itoc.000213: 避免 guest 轉錄去 sysop 板 */
     return XO_NONE;
@@ -1197,13 +1466,13 @@ post_cross(xo)
   hdr = tag ? &xhdr : (HDR *) xo_pool + (xo->pos - xo->top);	/* lkchu.981201: 整批轉錄 */
 
   /* 原作者轉錄自己文章時，可以選擇「原文轉載」 */
-  method = (HAS_PERM(PERM_ALLBOARD) || (!tag && !strcmp(hdr->owner, cuser.userid))) &&
+  method = (HAS_PERM(PERM_ALLBOARD) || (!tag && is_author(hdr))) &&
     (vget(2, 0, "(1)原文轉載 (2)轉錄文章？[1] ", buf, 3, DOECHO) != '2') ? 0 : 1;
 
   if (!tag)	/* lkchu.981201: 整批轉錄就不要一一詢問 */
   {
     if (method)
-      sprintf(ve_title, "[轉錄]%.66s", hdr->title);
+      sprintf(ve_title, "Fw: %.68s", str_ttl(hdr->title));	/* 已有 Re:/Fw: 字樣就只要一個 Fw: */
     else
       strcpy(ve_title, hdr->title);
 
@@ -1219,6 +1488,14 @@ post_cross(xo)
   if (rc != 'l' && rc != 's')
 #endif
     return XO_HEAD;
+
+  if (method && *dir == 'b')	/* 從看板轉出，先檢查此看板是否為秘密板 */
+  {
+    /* 借用 tmpbattr */
+    tmpbattr = (bshm->bcache + currbno)->readlevel;
+    if (tmpbattr == PERM_SYSOP || tmpbattr == PERM_BOARD)
+      method = 2;
+  }
 
   xbno = brd_bno(xboard);
   xbattr = (bshm->bcache + xbno)->battr;
@@ -1245,7 +1522,7 @@ post_cross(xo)
       EnumTag(hdr, dir, locus, sizeof(HDR));
 
       if (method)
-	sprintf(ve_title, "[轉錄]%.66s", hdr->title);
+	sprintf(ve_title, "Fw: %.68s", str_ttl(hdr->title));	/* 已有 Re:/Fw: 字樣就只要一個 Fw: */
       else
 	strcpy(ve_title, hdr->title);
     }
@@ -1270,17 +1547,37 @@ post_cross(xo)
     if (method)		/* 一般轉錄 */
     {
       /* itoc.030325: 一般轉錄要重新加上 header */
-      fp = fdopen(hdr_stamp(xfolder, 'A', &xpost, buf), "w");
-      ve_header(fp);
+      fpw = fdopen(hdr_stamp(xfolder, 'A', &xpost, buf), "w");
+      ve_header(fpw);
 
       /* itoc.040228: 如果是從精華區轉錄出來的話，會顯示轉錄自 [currboard] 看板，
 	 然而 currboard 未必是該精華區的看板。不過不是很重要的問題，所以就不管了 :p */
-      fprintf(fp, "※ 本文轉錄自 [%s] %s\n\n", 
-	*dir == 'u' ? cuser.userid : tmpboard, 
+      fprintf(fpw, "※ 本文轉錄自 [%s] %s\n\n", 
+	*dir == 'u' ? cuser.userid : method == 2 ? "秘密" : tmpboard, 
 	*dir == 'u' ? "信箱" : "看板");
 
-      f_suck(fp, fpath);
-      fclose(fp);
+      /* Kyo.051117: 若是從秘密看板轉出的文章，刪除文章第一行所記錄的看板名稱 */
+      finish = 0;
+      if ((method == 2) && (fpr = fopen(fpath, "r")))
+      {
+	if (fgets(buf, sizeof(buf), fpr) && 
+	  ((ptr = strstr(buf, str_post1)) || (ptr = strstr(buf, str_post2))) && (ptr > buf))
+	{
+	  ptr[-1] = '\n';
+	  *ptr = '\0';
+
+	  do
+	  {
+	    fputs(buf, fpw);
+	  } while (fgets(buf, sizeof(buf), fpr));
+	  finish = 1;
+	}
+	fclose(fpr);
+      }
+      if (!finish)
+	f_suck(fpw, fpath);
+
+      fclose(fpw);
 
       strcpy(xpost.owner, cuser.userid);
       strcpy(xpost.nick, cuser.username);
@@ -1304,7 +1601,11 @@ post_cross(xo)
       xpost.xmode = POST_RESTRICT;
 #endif
 
+    /* wakefield.081212: 移除原本置底 */
+    /*
     rec_bot(xfolder, &xpost, sizeof(HDR));
+    */
+    rec_add(xfolder, &xpost, sizeof(HDR));
 
     if (rc == 's')
       outgo_post(&xpost, xboard);
@@ -1333,21 +1634,18 @@ post_forward(xo)
   XO *xo;
 {
   ACCT muser;
-  int pos;
   HDR *hdr;
 
   if (!HAS_PERM(PERM_LOCAL))
     return XO_NONE;
 
-  pos = xo->pos;
-  hdr = (HDR *) xo_pool + (pos - xo->top);
+  hdr = (HDR *) xo_pool + (xo->pos - xo->top);
 
   if (hdr->xmode & GEM_FOLDER)	/* 非 plain text 不能轉 */
     return XO_NONE;
 
 #ifdef HAVE_REFUSEMARK
-  if ((hdr->xmode & POST_RESTRICT) &&
-    strcmp(hdr->owner, cuser.userid) && !(bbstate & STAT_BM))
+  if (!chkrestrict(hdr))
     return XO_NONE;
 #endif
 
@@ -1392,17 +1690,31 @@ post_mark(xo)
       return XO_NONE;
 #endif
 
+    /* wakefield.081212: 增加置底 */
+    if (xmode & POST_BOTTOM)    /* 置底的文章不能解除 mark */
+      return XO_NONE;
+    /* wakefield.fixend */
+
     hdr->xmode = xmode ^ POST_MARKED;
     currchrono = hdr->chrono;
     rec_put(xo->dir, hdr, sizeof(HDR), xo->key == XZ_XPOST ? hdr->xid : pos, cmpchrono);
 
-    move(3 + cur, 7);
+    /* 041021.Lacool:修改文章列表標題位置(7 -> 8) */
+    /*
+    move(3 + cur, 8);
     outc(post_attr(hdr));
+    */
+
+    /* wakefield.081212: 更改 mark 顏色 */
+    move(3 + cur, 0);
+    post_item((xo->key == XZ_XPOST ? hdr->xid : pos) + 1, hdr);
   }
   return XO_NONE;
 }
 
 
+/* wakefield.081212: 移除原本的置底結構 */
+/*
 static int
 post_bottom(xo)
   XO *xo;
@@ -1426,9 +1738,77 @@ post_bottom(xo)
     strcpy(post.title, hdr->title);
 
     rec_add(xo->dir, &post, sizeof(HDR));
-    /* btime_update(currbno); */	/* 不需要，因為置底文章不列入未讀 */
+    /* btime_update(currbno); *	/* 不需要，因為置底文章不列入未讀 *
 
-    return post_load(xo);	/* 立刻顯示置底文章 */
+    return post_load(xo);	/* 立刻顯示置底文章 *
+  }
+  return XO_NONE;
+}
+*/
+
+
+/* wakefield.081212: 修改為另一種置底結構 */
+static int
+post_bottom(xo)
+  XO *xo;
+{
+  if (bbstate & STAT_BOARD)
+  {
+    HDR *hdr;
+    int pos, xmode;
+    char fpath[64];
+
+    pos = xo->pos;
+    hdr = (HDR *) xo_pool + (pos - xo->top);
+    xmode = hdr->xmode;
+
+#ifdef HAVE_LABELMARK
+    if (xmode & POST_DELETE)    /* 待砍的文章不能置底 */
+      return XO_NONE;
+#endif
+
+#ifdef HAVE_REFUSEMARK
+    if (xmode & POST_RESTRICT)  /* 加密文章不能置底 */
+      return XO_NONE;
+#endif
+
+    if (vans(xmode & POST_BOTTOM ?
+      "取消置底公告(Y/N)？[N] " : "加入置底公告(Y/N)？[N] ") != 'y')
+      return XO_FOOT;
+
+    brd_fpath(fpath, currboard, FN_BOTTOM);
+    currchrono = hdr->chrono;
+
+    if (xmode & POST_BOTTOM)        /* 在正本/謄本取消置底 */
+    {
+      xmode &= ~POST_BOTTOM;
+
+      /* 移除 FN_BOTTOM 中謄本 */
+      rec_del(fpath, sizeof(HDR), 0, cmpchrono);
+    }
+    else                             /* 在正本加上置底 */
+    {
+      if (rec_num(fpath, sizeof(HDR)) >= MAX_BOTTOM)
+      {
+        vmsg("置底篇數過多！");
+        return XO_FOOT;
+      }
+
+      /* 若置底也加 mark，這樣可以同時禁止 delete/rangdel/prune/label */
+      xmode |= POST_MARKED;
+
+      /* 將謄本加入 FN_BOTTOM */
+      hdr->xmode = xmode ^ POST_BOTTOM2;
+      rec_add(fpath, hdr, sizeof(HDR));
+
+      xmode |= POST_BOTTOM1;
+    }
+
+    /* 取消或加上置底於正本 */
+    hdr->xmode = xmode;
+    rec_put(xo->dir, hdr, sizeof(HDR), pos, cmpchrono);
+
+    return post_load(xo);  /* 立刻顯示置底文章 */
   }
   return XO_NONE;
 }
@@ -1449,14 +1829,27 @@ post_refuse(xo)		/* itoc.010602: 文章加密 */
   cur = pos - xo->top;
   hdr = (HDR *) xo_pool + cur;
 
-  if (!strcmp(hdr->owner, cuser.userid) || (bbstate & STAT_BM))
+  
+  /* wakefield.081212: 增加置底 */
+  if (hdr->xmode & POST_BOTTOM)  /* 加密文章不能置底 */
+    return XO_NONE;
+  /* wakefield.fixend */
+
+  if (is_author(hdr) || (bbstate & STAT_BM))
   {
     hdr->xmode ^= POST_RESTRICT;
     currchrono = hdr->chrono;
     rec_put(xo->dir, hdr, sizeof(HDR), xo->key == XZ_XPOST ? hdr->xid : pos, cmpchrono);
 
-    move(3 + cur, 7);
+    /* 041021.Lacool:修改文章列表標題位置(7 -> 8) */
+    /*
+    move(3 + cur, 8);
     outc(post_attr(hdr));
+    */
+
+    /* wakefield.081212: 更改 mark 顏色 */
+    move(3 + cur, 0);
+    post_item((xo->key == XZ_XPOST ? hdr->xid : pos) + 1, hdr);
   }
 
   return XO_NONE;
@@ -1486,8 +1879,15 @@ post_label(xo)
     currchrono = hdr->chrono;
     rec_put(xo->dir, hdr, sizeof(HDR), xo->key == XZ_XPOST ? hdr->xid : pos, cmpchrono);
 
-    move(3 + cur, 7);
+    /* 041021.Lacool:修改文章列表標題位置(7 -> 8) */
+    /*
+    move(3 + cur, 8);
     outc(post_attr(hdr));
+    */
+
+    /* wakefield.081212: 更改 mark 顏色 */
+    move(3 + cur, 0);
+    post_item((xo->key == XZ_XPOST ? hdr->xid : pos) + 1, hdr);
 
     return pos + 1 + XO_MOVE;	/* 跳至下一項 */
   }
@@ -1581,8 +1981,7 @@ post_delete(xo)
   cur = pos - xo->top;
   hdr = (HDR *) xo_pool + cur;
 
-  if ((hdr->xmode & POST_MARKED) ||
-    (!(bbstate & STAT_BOARD) && strcmp(hdr->owner, cuser.userid)))
+  if ((hdr->xmode & POST_MARKED) || (!(bbstate & STAT_BOARD) && !is_author(hdr)))
     return XO_NONE;
 
   by_BM = bbstate & STAT_BOARD;
@@ -1595,7 +1994,7 @@ post_delete(xo)
     {
       pos = move_post(hdr, xo->dir, by_BM);
 
-      if (!by_BM && !(currbattr & BRD_NOCOUNT))
+      if (!by_BM && !(currbattr & BRD_NOCOUNT) && !(hdr->xmode & POST_BOTTOM))
       {
 	/* itoc.010711: 砍文章要扣錢，算檔案大小 */
 	pos = pos >> 3;	/* 相對於 post 時 wordsnum / 10 */
@@ -1695,16 +2094,17 @@ post_copy(xo)	   /* itoc.010924: 取代 gem_gather */
   XO *xo;
 {
   int tag;
-  HDR *hdr;
 
   tag = AskTag("看板文章拷貝");
 
   if (tag < 0)
     return XO_FOOT;
 
-  hdr = (HDR *) xo_pool + (xo->pos - xo->top);
-
-  gem_buffer(xo->dir, tag ? NULL : hdr);
+#ifdef HAVE_REFUSEMARK
+  gem_buffer(xo->dir, tag ? NULL : (HDR *) xo_pool + (xo->pos - xo->top), chkrestrict);
+#else
+  gem_buffer(xo->dir, tag ? NULL : (HDR *) xo_pool + (xo->pos - xo->top), NULL);
+#endif
 
   if (bbstate & STAT_BOARD)
   {
@@ -1717,7 +2117,7 @@ post_copy(xo)	   /* itoc.010924: 取代 gem_gather */
     else
 #endif
     {
-      zmsg("拷貝完成，但是加密文章不會被拷貝。[注意] 貼上後才能刪除原文！");
+      zmsg("拷貝完成。[注意] 貼上後才能刪除原文！");
       return post_gem(xo);	/* 拷貝完直接進精華區 */
     }
   }
@@ -1747,12 +2147,20 @@ post_edit(xo)
   if (HAS_PERM(PERM_ALLBOARD))			/* 站長修改 */
   {
 #ifdef HAVE_REFUSEMARK
-    if ((hdr->xmode & POST_RESTRICT) && !(bbstate & STAT_BM) && strcmp(hdr->owner, cuser.userid))
+    if (!chkrestrict(hdr))
       return XO_NONE;
 #endif
     vedit(fpath, 0);
+
+    /* wake.081224: 編輯文章顯示未讀 ver.2 */
+    change_stamp(xo->dir, hdr);
+    currchrono = hdr->chrono;
+    rec_put(xo->dir, hdr, sizeof(HDR), xo->pos, cmpchrono);
+    post_history(xo, hdr);
+    btime_update(currbno);
+
   }
-  else if (cuser.userlevel && !strcmp(hdr->owner, cuser.userid))	/* 原作者修改 */
+  else if (cuser.userlevel && is_author(hdr))	/* 原作者修改 */
   {
     if (!vedit(fpath, 0))	/* 若非取消則加上修改資訊 */
     {
@@ -1760,6 +2168,14 @@ post_edit(xo)
       {
 	ve_banner(fp, 1);
 	fclose(fp);
+
+      /* wake.081224: 編輯文章顯示未讀 ver.2 */
+      change_stamp(xo->dir, hdr);
+      currchrono = hdr->chrono;
+      rec_put(xo->dir, hdr, sizeof(HDR), xo->pos, cmpchrono);
+      post_history(xo, hdr);
+      btime_update(currbno);
+
       }
     }
   }
@@ -1778,16 +2194,16 @@ post_edit(xo)
 
 
 void
-header_replace(xo, fhdr)	/* itoc.010709: 修改文章標題順便修改內文的標題 */
+header_replace(xo, hdr)		/* itoc.010709: 修改文章標題順便修改內文的標題 */
   XO *xo;
-  HDR *fhdr;
+  HDR *hdr;
 {
   FILE *fpr, *fpw;
   char srcfile[64], tmpfile[64], buf[ANSILINELEN];
   
-  hdr_fpath(srcfile, xo->dir, fhdr);
+  hdr_fpath(srcfile, xo->dir, hdr);
   strcpy(tmpfile, "tmp/");
-  strcat(tmpfile, fhdr->xname);
+  strcat(tmpfile, hdr->xname);
   f_cp(srcfile, tmpfile, O_TRUNC);
 
   if (!(fpr = fopen(tmpfile, "r")))
@@ -1806,7 +2222,7 @@ header_replace(xo, fhdr)	/* itoc.010709: 修改文章標題順便修改內文的標題 */
   if (!str_ncmp(buf, "標", 2))		/* 如果有 header 才改 */
   {
     strcpy(buf, buf[2] == ' ' ? "標  題: " : "標題: ");
-    strcat(buf, fhdr->title);
+    strcat(buf, hdr->title);
     strcat(buf, "\n");
   }
   fputs(buf, fpw);
@@ -1835,7 +2251,7 @@ post_title(xo)
   fhdr = (HDR *) xo_pool + cur;
   memcpy(&mhdr, fhdr, sizeof(HDR));
 
-  if (strcmp(cuser.userid, mhdr.owner) && !HAS_PERM(PERM_ALLBOARD))
+  if (!is_author(&mhdr) && !HAS_PERM(PERM_ALLBOARD))
     return XO_NONE;
 
   vget(b_lines, 0, "標題：", mhdr.title, TTLEN + 1, GCARRY);
@@ -1852,6 +2268,12 @@ post_title(xo)
   {
     memcpy(fhdr, &mhdr, sizeof(HDR));
     currchrono = fhdr->chrono;
+
+    /* wakefield.081212: 增加置底 */
+    if (fhdr->xmode & POST_BOTTOM2)
+      fhdr->xmode ^= POST_BOTTOM;       /* 避免正本變成謄本 */
+    /* wakefield.fixend */
+
     rec_put(xo->dir, fhdr, sizeof(HDR), xo->key == XZ_XPOST ? fhdr->xid : pos, cmpchrono);
 
     move(3 + cur, 0);
@@ -1859,6 +2281,18 @@ post_title(xo)
 
     /* itoc.010709: 修改文章標題順便修改內文的標題 */
     header_replace(xo, fhdr);
+
+    /* wakefield.081212: 增加置底 */
+    if (fhdr->xmode & POST_BOTTOM)      /* 同步置底的謄本 */
+    {
+      char fpath[64];
+      brd_fpath(fpath, currboard, FN_BOTTOM);
+      fhdr->xmode ^= POST_BOTTOM;
+      rec_put(fpath, fhdr, sizeof(HDR), 0, cmpchrono);
+      return XO_LOAD;
+    }
+    /* wakefield.fixend */
+
   }
   return XO_FOOT;
 }
@@ -1897,6 +2331,10 @@ addscore(hdd, ram)
   HDR *hdd, *ram;
 {
   hdd->xmode |= POST_SCORE;
+
+  /* wake.081224: 推文顯示未讀 ver.2 */
+  hdd->stamp = ram->stamp;
+
   if (curraddscore > 0)
   {
     if (hdd->score < 35)
@@ -1915,50 +2353,82 @@ post_score(xo)
   XO *xo;
 {
   HDR *hdr;
-  int pos, cur, ans;
-  char *dir, *userid, *verb, fpath[64], reason[50], vtbuf[10];
+  int pos, cur, vtlen, maxlen;
+  char *dir, *userid, fpath[64];
+  
+  /* wake.080611: 移除原本推文方式所需用的變數 */
+  /*
+  int ans;
+  char *verb, reason[80], vtbuf[12];
+  */
+
   FILE *fp;
 #ifdef HAVE_ANONYMOUS
   char uid[IDLEN + 1];
 #endif
 
-  if ((currbattr & BRD_NOSCORE) || !cuser.userlevel || !(bbstate & STAT_POST))	/* 評分視同發表文章 */
+  if (!cuser.userlevel || !(bbstate & STAT_POST))	/* 評分視同發表文章 */
     return XO_NONE;
+
+  /* wake.080611: 將原本的不能推文判斷拉出來顯示訊息 */
+  if (currbattr & BRD_NOSCORE)
+  {
+    vmsg("本板不可推文");
+    return XO_NONE;
+  }
 
   pos = xo->pos;
   cur = pos - xo->top;
   hdr = (HDR *) xo_pool + cur;
 
 #ifdef HAVE_REFUSEMARK
-  if ((hdr->xmode & POST_RESTRICT) &&
-    strcmp(hdr->owner, cuser.userid) && !(bbstate & STAT_BM))
+  if (!chkrestrict(hdr))
     return XO_NONE;
 #endif
 
+  /* wake.080611: 修改原本推文方式 */
+  if ( vans("推薦這篇文章？[Y]") == 'n' )
+    return XO_FOOT;
+
+  /*
   switch (ans = vans("◎ 評分 1)推文 2)唾棄 3)自定推 4)自定呸？[Q] "))
   {
   case '1':
-    verb = "\033[31m推";
+    verb = "1m推";
+    vtlen = 2;
     break;
 
   case '2':
-    verb = "\033[32m呸";
+    verb = "2m呸";
+    vtlen = 2;
     break;
 
   case '3':
   case '4':
-    if (!vget(b_lines, 0, "請輸入動詞：", fpath, 3, DOECHO) || !fpath[1])
+    if (!vget(b_lines, 0, "請輸入動詞：", fpath, 5, DOECHO))
       return XO_FOOT;
-    verb = vtbuf;
-    sprintf(verb, "\033[3%cm%s", ans - 2, fpath);
+    vtlen = strlen(fpath);
+    sprintf(verb = vtbuf, "%cm%s", ans - 2, fpath);
     break;
 
   default:
     return XO_FOOT;
   }
+  */
 
-  if (!vget(b_lines, 0, "請輸入理由：", reason, 50, DOECHO))
+
+#ifdef HAVE_ANONYMOUS
+  if (currbattr & BRD_ANONYMOUS)
+    maxlen = 64 - IDLEN - vtlen;
+  else
+#endif
+    maxlen = 64 - strlen(cuser.userid) - vtlen;
+
+  /* wake.080611: 推文不需輸入理由 */
+  /*
+  if (!vget(b_lines, 0, "請輸入理由：", reason, maxlen, DOECHO))
     return XO_FOOT;
+  */
 
 #ifdef HAVE_ANONYMOUS
   if (currbattr & BRD_ANONYMOUS)
@@ -1970,6 +2440,7 @@ post_score(xo)
       userid = cuser.userid;
     else
       strcat(userid, ".");		/* 自定的話，最後加 '.' */
+    maxlen = 64 - strlen(userid) - vtlen;
   }
   else
 #endif
@@ -1986,13 +2457,24 @@ post_score(xo)
     time(&now);
     ptime = localtime(&now);
 
-    fprintf(fp, "→ \033[36m%s %s\033[m：%-*s%02d/%02d/%02d\n", 
-      userid, verb, 62 - strlen(userid), reason, 
+    /* wake.080611: 修改原本推文顯示 */
+    fprintf(fp, "\033[m%13s%s%-*s\033[35m[%02d/%02d/%02d]\033[m\n",
+      userid, "\033[m\033[33m:", 50, "推薦這篇文章",
       ptime->tm_year % 100, ptime->tm_mon + 1, ptime->tm_mday);
+
+    /*
+    fprintf(fp, "→ \033[36m%s \033[3%s\033[m：%-*s%02d/%02d/%02d\n", 
+      userid, verb, maxlen, reason, 
+      ptime->tm_year % 100, ptime->tm_mon + 1, ptime->tm_mday);
+    */
+
     fclose(fp);
   }
 
   curraddscore = 0;
+
+  /* wake.080611: 移除扣分 */
+  #if 0
   if ((ans - '0') & 0x01)	/* 加分 */
   {
     if (hdr->score < 35)
@@ -2003,17 +2485,167 @@ post_score(xo)
     if (hdr->score > -35)
       curraddscore = -1;
   }
+  #endif
+
+  /* wake.080611: 將分數定位在 1 */
+  curraddscore = 1;
 
   if (curraddscore)
   {
     currchrono = hdr->chrono;
+
+    /* wake.081224: 推文顯示未讀 ver.2 */
+    change_stamp(xo->dir, hdr);
+
     rec_ref(dir, hdr, sizeof(HDR), xo->key == XZ_XPOST ? hdr->xid : pos, cmpchrono, addscore);
+
+    /* wake.081224: 推文顯示未讀 ver.2 */
+    post_history(xo, hdr);
+    btime_update(currbno);
+
+    /* wakefield.081212: 增加置底 */
+    if (hdr->xmode & POST_BOTTOM)  /* 同步置底的謄本 */
+    {
+     brd_fpath(fpath, currboard, FN_BOTTOM);
+     rec_ref(fpath, hdr, sizeof(HDR), 0, cmpchrono, addscore);
+    }
+    /* wakefield.fixend */
+
     return XO_LOAD;
   }
 
   return XO_FOOT;
 }
 #endif	/* HAVE_SCORE */
+
+
+#ifdef HAVE_EPOST
+
+static int currepost;
+
+
+static void
+addsent(hdd, ram)
+  HDR *hdd, *ram;
+{
+
+  /* wake.081224: 推文顯示未讀 ver.2 */
+  hdd->stamp = ram->stamp;
+
+  /*
+  hdd->xmode |= POST_SCORE;
+  if (curraddscore > 0)
+  {
+    if (hdd->score < 35)
+      hdd->score++;
+  }
+  else
+  {
+    if (hdd->score > -35)
+      hdd->score--;
+  }
+  */
+}
+
+
+int
+post_epost(xo)
+  XO *xo;
+{
+  HDR *hdr;
+  int pos, cur, vtlen, maxlen;
+  char *dir, *userid, fpath[64], reason[80];
+  FILE *fp;
+#ifdef HAVE_ANONYMOUS
+  char uid[IDLEN + 1];
+#endif
+
+  if (!cuser.userlevel || !(bbstate & STAT_POST))	/* 評分視同發表文章 */
+    return XO_NONE;
+
+  if (currbattr & BRD_NOEPOST)
+  {
+    vmsg("本板不可接文");
+    return XO_NONE;
+  }
+
+  pos = xo->pos;
+  cur = pos - xo->top;
+  hdr = (HDR *) xo_pool + cur;
+
+#ifdef HAVE_REFUSEMARK
+  if (!chkrestrict(hdr))
+    return XO_NONE;
+#endif
+
+  if (!vget(b_lines, 0, "一句話：", reason, 50, DOECHO))
+    return XO_FOOT;
+
+  if (vans("請您確定？[Y]") == 'n' )
+    return XO_FOOT;
+
+#ifdef HAVE_ANONYMOUS
+  if (currbattr & BRD_ANONYMOUS)
+    maxlen = 64 - IDLEN - vtlen;
+  else
+#endif
+    maxlen = 64 - strlen(cuser.userid) - vtlen;
+
+#ifdef HAVE_ANONYMOUS
+  if (currbattr & BRD_ANONYMOUS)
+  {
+    userid = uid;
+    if (!vget(b_lines, 0, "請輸入您想用的ID，也可直接按[Enter]，或是按[r]用真名：", userid, IDLEN, DOECHO))
+      userid = STR_ANONYMOUS;
+    else if (userid[0] == 'r' && userid[1] == '\0')
+      userid = cuser.userid;
+    else
+      strcat(userid, ".");		/* 自定的話，最後加 '.' */
+    maxlen = 64 - strlen(userid) - vtlen;
+  }
+  else
+#endif
+    userid = cuser.userid;
+
+  dir = xo->dir;
+  hdr_fpath(fpath, dir, hdr);
+
+  if (fp = fopen(fpath, "a"))
+  {
+    time_t now;
+    struct tm *ptime;
+
+    time(&now);
+    ptime = localtime(&now);
+
+    fprintf(fp, "\033[m%13s%s%-*s\033[35m[%02d/%02d/%02d]\033[m\n",
+      userid, "\033[m\033[33m:", 50, reason,
+      ptime->tm_year % 100, ptime->tm_mon + 1, ptime->tm_mday);
+
+    fclose(fp);
+  }
+
+  currepost = 1;
+
+  if (currepost)
+  {
+    currchrono = hdr->chrono;
+
+    /* wake.081224: 推文顯示未讀 ver.2 */
+    change_stamp(xo->dir, hdr);
+
+    rec_ref(dir, hdr, sizeof(HDR), xo->key == XZ_XPOST ? hdr->xid : pos, cmpchrono, addsent);
+
+    /* wake.081224: 推文顯示未讀 ver.2 */
+    post_history(xo, hdr);
+    btime_update(currbno);
+
+    return XO_LOAD;
+  }
+
+  return XO_FOOT;
+}
+#endif	/* HAVE_EPOST */
 
 
 static int
@@ -2041,17 +2673,40 @@ KeyFunc post_cb[] =
   'y', post_reply,
   'd', post_delete,
   'v', post_visit,
+
+  /* wake.080611: 重置按鍵
+                  文章轉載看板: x -> X
+                  文章站內轉寄: X -> Ctrl+x
+                      文章推薦:   -> x
+                      文章留話:   -> e
+  */
+  'X', post_cross,
+  Ctrl('X'), post_forward,
+
+  #if 0
   'x', post_cross,		/* 在 post/mbox 中都是小寫 x 轉看板，大寫 X 轉使用者 */
   'X', post_forward,
+  #endif
+
   't', post_tag,
   'E', post_edit,
   'T', post_title,
   'm', post_mark,
-  '_', post_bottom,
+/* '_', post_bottom, /* wakefield.081212: 更改置底按鍵 */
+  'N', post_bottom,
   'D', post_rangedel,
 
 #ifdef HAVE_SCORE
+  /* wake.080611: 改推文為 x */
+  'x', post_score,
+  /*
   '%', post_score,
+  */
+#endif
+
+  /* wake.080611: 仿[無名] e 文 */
+#ifdef HAVE_EPOST
+  'e', post_epost,
 #endif
 
   'w', post_write,
@@ -2078,9 +2733,11 @@ KeyFunc post_cb[] =
   'R' | XO_DL, (void *) "bin/vote.so:vote_result",
   'V' | XO_DL, (void *) "bin/vote.so:XoVote",
 
+/* wake.080611: 移除《拂楓落葉斬》，將按鍵讓給文章站內轉寄
 #ifdef HAVE_TERMINATOR
   Ctrl('X') | XO_DL, (void *) "bin/manage.so:post_terminator",
 #endif
+*/
 
   '~', XoXselect,		/* itoc.001220: 搜尋作者/標題 */
   'S', XoXsearch,		/* itoc.001220: 搜尋相同標題文章 */
@@ -2108,8 +2765,16 @@ KeyFunc xpost_cb[] =
   'r', xpost_browse,
   'y', post_reply,
   't', post_tag,
+
+  /* wake.080611: 改轉載看板為 X，轉載站內使用者為 Ctrl + x */
+  'X', post_cross,
+  Ctrl('X'), post_forward,
+
+  /*
   'x', post_cross,
   'X', post_forward,
+  */
+
   'c', post_copy,
   'g', gem_gather,
   'm', post_mark,
@@ -2117,7 +2782,15 @@ KeyFunc xpost_cb[] =
   'E', post_edit,		/* itoc.010716: 提供 XPOST 中可以編輯標題、文章，加密 */
   'T', post_title,
 #ifdef HAVE_SCORE
+  'x', post_score,
+  /* wake.080611: 改推文為 x */
+  /*
   '%', post_score,
+  */
+#endif
+  /* wake.080611: 仿[無名]接文 */
+#ifdef HAVE_EPOST
+  'e', post_epost,
 #endif
   'w', post_write,
 #ifdef HAVE_REFUSEMARK
@@ -2126,6 +2799,14 @@ KeyFunc xpost_cb[] =
 #ifdef HAVE_LABELMARK
   'n', post_label,
 #endif
+
+  '~', XoXselect,
+  'S', XoXsearch,
+  'a', XoXauthor,
+  '/', XoXtitle,
+  'f', XoXfull,
+  'G', XoXmark,
+  'L', XoXlocal,
 
   Ctrl('P'), post_add,
   Ctrl('D'), post_prune,

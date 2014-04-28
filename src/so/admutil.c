@@ -139,6 +139,8 @@ a_xfile()		/* 設定系統檔案 */
     "情書產生器文庫",
 #endif
 
+    "看板分類顏色", /* wake.081227: 自訂分類顏色 */
+
     "認證白名單",
     "認證黑名單",
 
@@ -181,6 +183,7 @@ a_xfile()		/* 設定系統檔案 */
 #ifdef HAVE_LOVELETTER
     FN_ETC_LOVELETTER,
 #endif
+    FN_ETC_CLASS, /* wake.081227: 自訂分類顏色 */
 
     TRUST_ACLFILE,
     UNTRUST_ACLFILE,
@@ -228,27 +231,173 @@ a_resetsys()		/* 重置 */
 }
 
 
+/* ----------------------------------------------------- */
+/* 還原備份檔						 */
+/* ----------------------------------------------------- */
+
+
+static void
+show_availability(type)		/* 將 BAKPATH 裡面所有可取回備份的目錄印出來 */
+  char *type;
+{
+  int tlen, len, col;
+  char *fname, fpath[64];
+  struct dirent *de;
+  DIR *dirp;
+  FILE *fp;
+
+  if (dirp = opendir(BAKPATH))
+  {
+    col = 0;
+    tlen = strlen(type);
+
+    sprintf(fpath, "tmp/restore.%s", cuser.userid);
+    fp = fopen(fpath, "w");
+    fputs("※ 可供取回的備份有：\n\n", fp);
+
+    while (de = readdir(dirp))
+    {
+      fname = de->d_name;
+      if (!strncmp(fname, type, tlen))
+      {
+	len = strlen(fname) + 2;
+	if (b_cols - col < len)
+	{
+	  fputc('\n', fp);
+	  col = len;
+	}
+	else
+	{
+	  col += len;
+	}
+	fprintf(fp, "%s  ", fname);
+      }
+    }
+
+    fputc('\n', fp);
+    fclose(fp);
+    closedir(dirp);
+
+    more(fpath, (char *) -1);
+    unlink(fpath);
+  }
+}
+
+
+int
+a_restore()
+{
+  int ch;
+  char *type, *ptr;
+  char *tpool[3] = {"brd", "gem", "usr"};
+  char date[20], brdname[BNLEN + 1], src[64], cmd[256];
+  ACCT acct;
+  BPAL *bpal;
+
+  ch = vans("◎ 還原備份 1)看板 2)精華區 3)使用者：[Q] ") - '1';
+  if (ch < 0 || ch >= 3)
+    return XEASY;
+
+  type = tpool[ch];
+  show_availability(type);
+
+  if (vget(b_lines, 0, "要取回的備份目錄：", date, 20, DOECHO))
+  {
+    /* 避免站長打了一個存在的目錄，但是和 type 不合 */
+    if (strncmp(date, type, strlen(type)))
+      return 0;
+
+    sprintf(src, BAKPATH"/%s", date);
+    if (!dashd(src))
+      return 0;
+    ptr = strchr(src, '\0');
+
+    clear();
+    move(3, 0);
+    outs("欲還原備份的看板/使用者必須已存在。\n"
+      "若該看板/使用者已刪除，請先重新開設/註冊一個同名的看板/使用者。\n"
+      "還原備份時請確認該看板無人使用/使用者不在線上");
+
+    if (ch == 0 || ch == 1)
+    {
+      if (!ask_board(brdname, BRD_L_BIT, NULL))
+	return 0;
+      sprintf(ptr, "/%s%s.tgz", ch == 0 ? "" : "brd/", brdname);
+    }
+    else /* if (ch == 2) */
+    {
+      if (acct_get(msg_uid, &acct) <= 0)
+	return 0;
+      type = acct.userid;
+      str_lower(type, type);
+      sprintf(ptr, "/%c/%s.tgz", *type, type);
+    }
+
+    if (!dashf(src))
+    {
+      /* 檔案不存在，通常是因為備份點時該看板/使用者已被刪除，或是當時根本就還沒有該看板/使用者 */
+      vmsg("備份檔案不存在，請試試其他時間點的備份");
+      return 0;
+    }
+
+    if (vans("還原備份後，目前所有資料都會流失，請務必確定(Y/N)？[N] ") != 'y')
+      return 0;
+
+    alog("還原備份", src);
+
+    /* 解壓縮 */
+    if (ch == 0)
+      ptr = "brd";
+    else if (ch == 1)
+      ptr = "gem/brd";
+    else /* if (ch == 2) */
+      sprintf(ptr = date, "usr/%c", *type);
+    sprintf(cmd, "tar xfz %s -C %s/", src, ptr);
+    /* system(cmd); */
+
+#if 1	/* 讓站長手動執行 */
+    move(7, 0);
+    outs("\n請以 bbs 身分登入工作站，並於\033[1;36m家目錄\033[m執行\n\n\033[1;33m");
+    outs(cmd);
+    outs("\033[m\n\n");
+#endif
+
+    /* tar 完以後，還要做的事 */
+    if (vans("◎ 指令 Y)已成功\執行以上指令 Q)放棄執行：[Q] ") == 'y')
+    {
+      if (ch == 0)	/* 還原看板時，要更新板友 */
+      {
+	if ((ch = brd_bno(brdname)) >= 0)
+	{
+	  brd_fpath(src, brdname, fn_pal);
+	  bpal = bshm->pcache + ch;
+	  bpal->pal_max = image_pal(src, bpal->pal_spool);
+	}
+      }
+      else if (ch == 2)	/* 還原使用者時，不還原 userno */
+      {
+	ch = acct.userno;
+	if (acct_load(&acct, type) >= 0)
+	{
+	  acct.userno = ch;
+	  acct_save(&acct);
+	}
+      }
+      vmsg("還原備份成功\");
+      return 0;
+    }
+  }
+
+  vmsg(msg_cancel);
+  return 0;
+}
+
+
 #ifdef HAVE_REGISTER_FORM
 
 /* ----------------------------------------------------- */
 /* 處理 Register Form					 */
 /* ----------------------------------------------------- */
-
-
-static void
-biff_user(userno)
-  int userno;
-{
-  UTMP *utmp, *uceil;
-
-  utmp = ushm->uslot;
-  uceil = (void *) utmp + ushm->offset;
-  do
-  {
-    if (utmp->userno == userno)
-      utmp->status |= STATUS_BIFF;
-  } while (++utmp <= uceil);
-}
 
 
 static int
@@ -268,11 +417,12 @@ scan_register_form(fd)
 
   ACCT acct;
   RFORM rform;
-  HDR fhdr;
+  HDR hdr;
   FILE *fout;
 
   int op, n;
-  char buf[128], msg[256], *agent, *userid, *str;
+  char buf[256], *agent, *userid, *str;
+  char folder[64], fpath[64];
 
   vs_bar("審核使用者註冊資料");
   agent = cuser.userid;
@@ -322,24 +472,24 @@ scan_register_form(fd)
     case 'y':
 
       /* 提升權限 */
-      sprintf(msg, "REG: %s:%s:%s:by %s", rform.phone, rform.career, rform.address, agent);
-      justify_log(acct.userid, msg);
-      time(&(acct.tvalid));
+      sprintf(buf, "REG: %s:%s:%s:by %s", rform.phone, rform.career, rform.address, agent);
+      justify_log(acct.userid, buf);
+      time(&acct.tvalid);
       /* itoc.041025: 這個 acct_setperm() 並沒有緊跟在 acct_load() 後面，中間隔了一個 vans()，
          這可能造成拿舊 acct 去覆蓋新 .ACCT 的問題。不過因為是站長才有的權限，所以就不改了 */
       acct_setperm(&acct, PERM_VALID, 0);
 
       /* 寄信通知使用者 */
-      usr_fpath(buf, userid, fn_dir);
-      hdr_stamp(buf, HDR_LINK, &fhdr, FN_ETC_JUSTIFIED);
-      strcpy(fhdr.title, msg_reg_valid);
-      strcpy(fhdr.owner, str_sysop);
-      rec_add(buf, &fhdr, sizeof(fhdr));
+      usr_fpath(folder, userid, fn_dir);
+      hdr_stamp(folder, HDR_LINK, &hdr, FN_ETC_JUSTIFIED);
+      strcpy(hdr.title, msg_reg_valid);
+      strcpy(hdr.owner, str_sysop);
+      rec_add(folder, &hdr, sizeof(HDR));
 
       strcpy(rform.agent, agent);
       rec_add(logfile, &rform, sizeof(RFORM));
 
-      biff_user(rform.userno);
+      m_biff(rform.userno);
 
       break;
 
@@ -364,23 +514,21 @@ scan_register_form(fd)
       if (op = vget(b_lines, 0, "退回原因：", buf, 60, DOECHO))
       {
 	int i;
-	char folder[80], fpath[80];
-	HDR fhdr;
 
 	i = op - '0';
 	if (i >= 0 && i < n)
 	  strcpy(buf, reason[i]);
 
 	usr_fpath(folder, acct.userid, fn_dir);
-	if (fout = fdopen(hdr_stamp(folder, 0, &fhdr, fpath), "w"))
+	if (fout = fdopen(hdr_stamp(folder, 0, &hdr, fpath), "w"))
 	{
 	  fprintf(fout, "\t由於您提供的資料不夠詳實，無法確認身分，"
 	    "\n\n\t請重新填寫註冊表單：%s。\n", buf);
 	  fclose(fout);
 
-	  strcpy(fhdr.owner, agent);
-	  strcpy(fhdr.title, "[退件] 請您重新填寫註冊表單");
-	  rec_add(folder, &fhdr, sizeof(fhdr));
+	  strcpy(hdr.owner, agent);
+	  strcpy(hdr.title, "[退件] 請您重新填寫註冊表單");
+	  rec_add(folder, &hdr, sizeof(HDR));
 	}
 
 	strcpy(rform.reply, buf);	/* 理由 */
@@ -552,17 +700,17 @@ send_list(title, fpath, list)
   char *list;		/* 寄信的名單 */
 {
   char folder[64], *ptr;
-  HDR mhdr;
+  HDR hdr;
 
   for (ptr = list; *ptr; ptr += IDLEN + 1)
   {
     usr_fpath(folder, ptr, fn_dir);
-    if (hdr_stamp(folder, HDR_LINK, &mhdr, fpath) >= 0)
+    if (hdr_stamp(folder, HDR_LINK, &hdr, fpath) >= 0)
     {
-      strcpy(mhdr.owner, str_sysop);
-      strcpy(mhdr.title, title);
-      mhdr.xmode = 0;
-      rec_add(folder, &mhdr, sizeof(HDR));
+      strcpy(hdr.owner, str_sysop);
+      strcpy(hdr.title, title);
+      hdr.xmode = 0;
+      rec_add(folder, &hdr, sizeof(HDR));
     }
   }
 }
@@ -621,6 +769,7 @@ m_bm()
   }
 
   curredit = EDIT_MAIL;
+  *quote_file = '\0';
   if (vedit(fpath, 1) >= 0)
   {
     vmsg("需要一段蠻長的時間，請耐心等待");
@@ -671,6 +820,7 @@ m_all()
   }
 
   curredit = EDIT_MAIL;
+  *quote_file = '\0';
   if (vedit(fpath, 1) >= 0)
   {
     vmsg("需要一段蠻長的時間，請耐心等待");

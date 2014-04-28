@@ -126,7 +126,7 @@ brh_put()
 
     list[-item - 1] = item;
     *list = 0;
-    brh_tail = list;  /* Thor.980904:新的空brh */
+    brh_tail = list;  /* Thor.980904: 新的空brh */
   }
 }
 
@@ -602,13 +602,6 @@ brh_load()
 
   *base = 0;
   brh_tail = base;
-
-  /* --------------------------------------------------- */
-  /* 設定 default board					 */
-  /* --------------------------------------------------- */
-
-  strcpy(currboard, BN_NULL);
-  currbno = -1;
 }
 
 
@@ -777,6 +770,19 @@ czh_load()
 
 /*-------------------------------------------------------*/
 
+void
+mantime_add(outbno, inbno)
+  int outbno;
+  int inbno;
+{
+  /* itoc.050613.註解: 人氣的減少不是在離開看板時，而是在進入新的看板或是離站時，
+     這是為了避免 switch 跳看板會算錯人氣 */
+  if (outbno >= 0)
+    bshm->mantime[outbno]--;		/* 退出上一個板 */
+  if (inbno >= 0)
+    bshm->mantime[inbno]++;		/* 進入新的板 */
+}
+
 
 int
 XoPost(bno)
@@ -787,70 +793,75 @@ XoPost(bno)
   int bits;
   char *str, fpath[64];
 
-  bbstate = STAT_STARTED;
-
   brd = bshm->bcache + bno;
-  str = &brd_bits[bno];
-  bits = *str;
-
-#ifdef HAVE_MODERATED_BOARD
-  if (!(bits & BRD_R_BIT))
-  {
-    vmsg("對不起，此板只准板友進入，請向板主申請入境許\可");
-    return -1;
-  }
-#endif
-
   if (!brd->brdname[0])	/* 已刪除的看板 */
     return -1;
 
-  if (currbno != bno)
+  bits = brd_bits[bno];
+
+  /* wake.080606: 每次進入看板都重取設定 */
+  currbattr = brd->battr;
+
+  if (currbno != bno)	/* 看板沒換通常是因為 every_Z() 回原看板 */
   {
-    /* itoc.050613.註解: 人氣的減少不是在離開看板時，而是在進入新的看板或是離站時，
-       這是為了避免 switch 跳看板會算錯人氣 */
-    if (currbno >= 0 && bshm->mantime[currbno] > 0)
-      bshm->mantime[currbno]--;	/* 退出上一個板 */
-    bshm->mantime[bno]++;	/* 進入新的板 */
+#ifdef HAVE_MODERATED_BOARD
+    if (!(bits & BRD_R_BIT))
+    {
+      vmsg("對不起，此板只准板友進入，請向板主申請入境許\可");
+      return -1;
+    }
+#endif
+
+    /* 處理權限 */
+    bbstate = STAT_STARTED;
+    if (bits & BRD_M_BIT)
+      bbstate |= (STAT_BM | STAT_BOARD | STAT_POST);
+    else if (bits & BRD_X_BIT)
+      bbstate |= (STAT_BOARD | STAT_POST);
+    else if (bits & BRD_W_BIT)
+      bbstate |= STAT_POST;
+
+    mantime_add(currbno, bno);
+
+    currbno = bno;
+
+    /* wake.080606: 看板設定提早取出
+    currbattr = brd->battr;
+    */
+
+    strcpy(currboard, brd->brdname);
+    str = brd->BM;
+    sprintf(currBM, "板主：%s", *str <= ' ' ? "徵求中" : str);
+#ifdef HAVE_BRDMATE
+    strcpy(cutmp->reading, currboard);
+#endif
+
+    brd_fpath(fpath, currboard, fn_dir);
+
+#ifdef AUTO_JUMPPOST
+    xz[XZ_POST - XO_ZONE].xo = xo = xo_get_post(fpath, brd);	/* itoc.010910: 為 XoPost 量身打造一支 xo_get() */
+#else
+    xz[XZ_POST - XO_ZONE].xo = xo = xo_get(fpath);
+#endif
+    xo->key = XZ_POST;
+    xo->xyz = brd->title;
+
+    /* wakefield.081212: 增加置底 */
+    if (xo->pos == XO_TAIL)   /* 第一次進板將游標放在未置底的最後一篇 */
+      xo->pos = (brd->btime < 0 ? rec_num(fpath, sizeof(HDR)) : brd->bpost) - 1;
+    /* wakefield.fixend */
+
   }
 
-  if (bits & BRD_M_BIT)
-    bbstate |= (STAT_BM | STAT_BOARD | STAT_POST);
-  else if (bits & BRD_X_BIT)
-    bbstate |= (STAT_BOARD | STAT_POST);
-  else if (bits & BRD_W_BIT)
-    bbstate |= STAT_POST;
-
-  currbno = bno;
-  currbattr = brd->battr;
-  strcpy(currboard, brd->brdname);
-
-  brh_get(brd->bstamp, bno);
-
-  /* itoc.011113: 改成第一次進板要看備忘錄 */
+  /* itoc.011113: 第一次進板一定要看進板畫面，第二次以後則取決 ufo 設定 */
   if (!(bits & BRD_V_BIT) || (cuser.ufo & UFO_BRDNOTE))
   {
-    *str = bits | BRD_V_BIT;
+    brd_bits[bno] = bits | BRD_V_BIT;
     brd_fpath(fpath, currboard, fn_note);
     more(fpath, NULL);
   }
 
-  brd_fpath(fpath, currboard, fn_dir);
-
-#ifdef AUTO_JUMPPOST
-  xz[XZ_POST - XO_ZONE].xo = xo = xo_get_post(fpath, brd);	/* itoc.010910: 為 XoPost 量身打造一支 xo_get() */
-#else
-  xz[XZ_POST - XO_ZONE].xo = xo = xo_get(fpath);
-#endif
-  xo->key = XZ_POST;
-  xo->xyz = brd->title;
-  str = brd->BM;
-  if (*str <= ' ')
-    str = "徵求中";
-  sprintf(currBM, "板主：%s", str);
-
-#ifdef HAVE_BRDMATE
-  strcpy(cutmp->reading, currboard);
-#endif
+  brh_get(brd->bstamp, bno);
 
   return 0;
 }
@@ -1021,7 +1032,11 @@ btime_refresh(brd)
   {
     int fd, fsize;
     char folder[64];
+
     struct stat st;
+
+    /* 081224.wake: 推文接文未讀顯示改法 ver.2 */
+    time_t maxchrono;
 
     brd->btime = 1;
     brd_fpath(folder, brd->brdname, fn_dir);
@@ -1034,14 +1049,31 @@ btime_refresh(brd)
 
 	brd->bpost = fsize / sizeof(HDR);
 	/* itoc.020829: 找最後一篇未被加密、不是置底的 HDR */
-	while ((fsize -= sizeof(HDR)) >= 0)
+
+  /* 081224.wake: 推文接文未讀顯示改法 ver.2 */
+	//while ((fsize -= sizeof(HDR)) >= 0)
+  maxchrono = 0;
+  while (read(fd, &hdr, sizeof(HDR)) == sizeof(HDR))
+
 	{
-	  lseek(fd, fsize, SEEK_SET);
-	  read(fd, &hdr, sizeof(HDR));
+    /* 081224.wake: 推文接文未讀顯示改法 ver.2 */
+	  //lseek(fd, fsize, SEEK_SET);
+	  //read(fd, &hdr, sizeof(HDR));
+
 	  if (!(hdr.xmode & (POST_RESTRICT | POST_BOTTOM)))
-	    break;
+
+    /* 081224.wake: 推文接文未讀顯示改法 ver.2 */
+	    //break;
+    {
+      maxchrono = BMAX(maxchrono, hdr.chrono);
+      maxchrono = BMAX(maxchrono, hdr.stamp);
+    }
+
 	}
-	brd->blast = hdr.chrono;
+  /* 081224.wake: 推文接文未讀顯示改法 ver.2 */
+	//brd->blast = hdr.chrono;
+  brd->blast = maxchrono;
+
 #else
 	brd->bpost = fsize / sizeof(HDR);
 	lseek(fd, fsize - sizeof(HDR), SEEK_SET);
@@ -1058,12 +1090,30 @@ btime_refresh(brd)
 }
 
 
+/* wake.081227: 自訂分類顏色 */
+static char *       /* 回傳顏色 */
+class_color(class)
+  char *class;
+{
+  int i;
+  char *str;
+  extern FCACHE *fshm;
+
+  for (i = 0; *(str = fshm->classtable[i]); i++)
+  {
+    if (!strcmp(class, str))
+      break;
+  }
+  return fshm->colortable[i];
+}
+
+
 void
 class_item(num, bno, brdpost)
   int num, bno, brdpost;
 {
   BRD *brd;
-  char *str1, *str2, *str3, token, buf[16];
+  char *str1, *str2, *str3, token, buf[16], *color;
 
   brd = bshm->bcache + bno;
 
@@ -1107,12 +1157,27 @@ class_item(num, bno, brdpost)
   else
     str3 = "  ";
 
-  /* itoc.010909: 板名太長的刪掉、加分類顏色。假設 BCLEN = 4 */
-  prints("%6d%c%s%-13s\033[1;3%dm%-5s\033[m%s %-*.*s %s %.*s\n",
+  /* wake.081227: 自訂分類顏色 */
+  /*
+  prints("%6d%c%s%-13s\033[1;3%dm%-5s\033[m%s ",
     num, token, str1, brd->brdname,
-    brd->class[3] & 7, brd->class, str2,
-    (d_cols >> 1) + 31, (d_cols >> 1) + 30, brd->title, str3,
-    d_cols - (d_cols >> 1) + 13, brd->BM);
+    brd->class[3] & 7, brd->class, str2);
+  */
+
+  color = class_color(brd->class);
+
+  if (!strcmp(color, ";"))
+    sprintf(color, "1;3%d", brd->class[3] & 7);
+
+  prints("%6d%c%s%-13s\033[%sm%-4s\033[m %s ",
+    num, token, str1, brd->brdname,
+    color, brd->class, str2);
+
+  /* itoc.060530: 借用 str1、num 來處理看板敘述顯示的中文斷字 */
+  str1 = brd->title;
+  num = (d_cols >> 1) + 33;
+  prints("%-*.*s", num, IS_ZHC_LO(str1, num - 1) ? num - 2 : num - 1, str1);
+  prints("%s %.*s\n", str3, d_cols - (d_cols >> 1) + 12, brd->BM);
 }
 
 
@@ -1192,12 +1257,30 @@ class_body(xo)
 	short *chx;
 	char *img, *str;
 
+  /* wake.081227: 自訂分類顏色 */
+  char class[BCLEN + 1], *color;
+
 	img = class_img;
 	chx = (short *) img + (CH_END - chn);
 	str = img + *chx;
+
+  /* wake.081227: 自訂分類顏色 */
+  /*
 	prints("%6d%c  %-13.13s\033[1;3%dm%-5.5s\033[m%s\n", 
 	  cnt, class_bits[-chn] & BRD_Z_BIT ? TOKEN_ZAP_BRD : ' ', 
 	  str, str[BNLEN + 4] & 7, str + BNLEN + 1, str + BNLEN + 1 + BCLEN + 1);
+  */
+  str_ncpy(class, str + BNLEN + 1, BCLEN + 1);
+
+  color = class_color(class);
+
+  if (!strcmp(color, ";"))
+    sprintf(color, "1;3%d", str[BNLEN + 4] & 7);
+
+  prints("%6d%c  %-13.13s\033[%sm%-5.5s\033[m%s\n",
+    cnt, class_bits[-chn] & BRD_Z_BIT ? TOKEN_ZAP_BRD : ' ',
+    str, color, str + BNLEN + 1, str + BNLEN + 1 + BCLEN + 1);
+
       }
       chp++;
     }
@@ -1716,12 +1799,44 @@ class_switch(xo)
 /* ----------------------------------------------------- */
 
 
+static inline int
+in_favor(brdname)
+  char *brdname;
+{
+  MF mf;
+  int fd;
+  int rc = 0;
+  char fpath[64];
+
+  if (brdname[0])
+  {
+    mf_fpath(fpath, cuser.userid, FN_MF);
+
+    if ((fd = open(fpath, O_RDONLY)) >= 0)
+    {
+      while (read(fd, &mf, sizeof(MF)) == sizeof(MF))
+      {
+	if (!strcmp(brdname, mf.xname))
+	{
+	  rc = 1;
+	  break;
+	}
+      }
+    }
+    close(fd);
+  }
+  return rc;
+}
+
+
 static int 
 class_addMF(xo)
   XO *xo;  
 {    
   short *chp;
   int chn;
+  MF mf;
+  char fpath[64];
 
   if (!cuser.userlevel)
     return XO_NONE;
@@ -1729,17 +1844,14 @@ class_addMF(xo)
   chp = (short *) xo->xyz + xo->pos;
   chn = *chp;
       
-  if (chn >= 0)
+  if (chn >= 0)		/* 一般看板 */
   {
     BRD *bhdr;
 
     bhdr = bshm->bcache + chn;
 
-    if (bhdr->brdname[0])	/* 不是已刪除的看板 */
+    if (!in_favor(bhdr->brdname))
     {
-      MF mf;
-      char fpath[64];
-
       memset(&mf, 0, sizeof(MF));
       time(&mf.chrono);
       mf.mftype = MF_BOARD;
@@ -1747,11 +1859,64 @@ class_addMF(xo)
 
       mf_fpath(fpath, cuser.userid, FN_MF);
       rec_add(fpath, &mf, sizeof(MF));
-      vmsg("已加入我的最愛");
+      vmsg("已將此看板加入我的最愛");
     }
+    else
+    {
+      vmsg("此看板已在最愛中。若要重覆加入，請進我的最愛裡新增");
+    }
+  }
+  else			/* 分類群組 */
+  {
+    short *chx;
+    char *img, *str, *ptr;
+
+    img = class_img;
+    chx = (short *) img + (CH_END - chn);
+    str = img + *chx;
+
+    memset(&mf, 0, sizeof(MF));
+    time(&mf.chrono);
+    mf.mftype = MF_CLASS;
+    ptr = strchr(str, '/');
+    strncpy(mf.xname, str, ptr - str);
+    strncpy(mf.class, str + BNLEN + 1, BCLEN);
+    strcpy(mf.title, str + BNLEN + 1 + BCLEN + 1);
+
+    mf_fpath(fpath, cuser.userid, FN_MF);
+    rec_add(fpath, &mf, sizeof(MF));
+    vmsg("已將此分類加入我的最愛");
   }
 
   return XO_FOOT;
+}
+
+
+int
+MFclass_browse(name)
+  char *name;
+{
+  int chn, min_chn, len;
+  short *chx;
+  char *img, cname[BNLEN + 2];
+
+  min_chn = bshm->min_chn;
+  img = class_img;
+
+  sprintf(cname, "%s/", name);
+  len = strlen(cname);
+
+  for (chn = CH_END - 2; chn >= min_chn; chn--)
+  {
+    chx = (short *) img + (CH_END - chn);
+    if (!strncmp(img + *chx, cname, len))
+    {
+      if (XoClass(chn))
+	return 1;
+      break;
+    }
+  }
+  return 0;
 }
   
 #endif  /* MY_FAVORITE */
@@ -1768,11 +1933,12 @@ static int
 XoAuthor(xo)
   XO *xo;
 {
-  int chn, len, max, tag;
+  int chn, len, max, tag, value;
   short *chp, *chead, *ctail;
   BRD *brd;
   char key[30], author[IDLEN + 1];
   XO xo_a, *xoTmp;
+  struct timeval tv = {0, 10};
 
   vget(b_lines, 0, MSG_XYPOST1, key, 30, DOECHO);
   vget(b_lines, 0, MSG_XYPOST2, author, IDLEN + 1, DOECHO);
@@ -1804,11 +1970,11 @@ XoAuthor(xo)
       char folder[80];
       HDR *head, *tail;
 
-      sprintf(folder, "《尋找指定標題作者》看板：%s \033[5m...\033[m", brd[chn].brdname);
+      sprintf(folder, "《尋找指定標題作者》看板：%s \033[5m...\033[m按任意鍵中斷", brd[chn].brdname);
       outz(folder);
       refresh();
-      brd_fpath(folder, brd[chn].brdname, fn_dir);
 
+      brd_fpath(folder, brd[chn].brdname, fn_dir);
       fimage = f_map(folder, &fsize);
 
       if (fimage == (char *) -1)
@@ -1829,6 +1995,14 @@ XoAuthor(xo)
       }
 
       munmap(fimage, fsize);
+    }
+
+    /* 使用者可以中斷搜尋 */
+    value = 1;
+    if (select(1, (fd_set *) &value, NULL, NULL, &tv) > 0)
+    {
+      vkey();
+      break;
     }
   } while (chead < ctail);
 
@@ -1931,6 +2105,10 @@ board_main()
     class_flag = cuser.ufo & UFO_BRDPOST;	/* 看板列表 1:文章數 0:編號 */
     if (!cuser.userlevel)			/* guest yank all boards */
       class_flag |= BFO_YANK;
+
+    /* 設定 default board */
+    strcpy(currboard, BN_NULL);
+    currbno = -1;
   }
 
   /* class_img = f_img(CLASS_IMGFILE, &fsize); */

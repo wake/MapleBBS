@@ -139,16 +139,20 @@ vch_edit(vch, item, echo)
   int item;		/* vlist 有幾項 */
   int echo;
 {
-  int num;
+  int num, row;
   char ans[8], buf[80];
 
+  clear();
+
+  row = 3;
+
   if (echo == DOECHO)	/* 只有新增時才能決定是否為賭盤 */
-    vch->vgamble = (vget(b_lines - 6, 0, "是否為賭盤(Y/N)？[N] ", ans, 3, LCECHO) == 'y') ? '$' : ' ';
+    vch->vgamble = (vget(++row, 0, "是否為賭盤(Y/N)？[N] ", ans, 3, LCECHO) == 'y') ? '$' : ' ';
 
   if (vch->vgamble == ' ')
   {
     sprintf(buf, "請問每人最多可投幾票？([1]～%d)：", item);
-    vget(b_lines - 5, 0, buf, ans, 3, DOECHO);
+    vget(++row, 0, buf, ans, 3, DOECHO);
     num = atoi(ans);
     if (num < 1)
       num = 1;
@@ -161,7 +165,7 @@ vch_edit(vch, item, echo)
     /* 賭盤就只能選一項 */
     vch->maxblt = 1;
 
-    vget(b_lines - 5, 0, "請問每票售價多少銀幣？(100～100000)：", ans, 7, DOECHO);
+    vget(++row, 0, "請問每票售價多少銀幣？(100～100000)：", ans, 7, DOECHO);
     num = atoi(ans);
     if (num < 100)
       num = 100;
@@ -170,7 +174,7 @@ vch_edit(vch, item, echo)
     vch->price = num;
   }
 
-  vget(b_lines - 4, 0, "本項投票進行幾小時 (至少一小時)？[1] ", ans, 5, DOECHO);
+  vget(++row, 0, "本項投票進行幾小時 (至少一小時)？[1] ", ans, 5, DOECHO);
   num = atoi(ans);
   if (num < 1)
     num = 1;
@@ -179,8 +183,8 @@ vch_edit(vch, item, echo)
 
   if (vch->vgamble == ' ')	/* 賭盤一定排序、及顯示百分比 */
   {
-    vch->vsort = (vget(b_lines - 3, 0, "開票結果是否排序(Y/N)？[N] ", ans, 3, LCECHO) == 'y') ? 's' : ' ';
-    vch->vpercent = (vget(b_lines - 2, 0, "開票結果是否顯示百分比例(Y/N)？[N] ", ans, 3, LCECHO) == 'y') ? '%' : ' ';
+    vch->vsort = (vget(++row, 0, "開票結果是否排序(Y/N)？[N] ", ans, 3, LCECHO) == 'y') ? 's' : ' ';
+    vch->vpercent = (vget(++row, 0, "開票結果是否顯示百分比例(Y/N)？[N] ", ans, 3, LCECHO) == 'y') ? '%' : ' ';
   }
   else
   {
@@ -188,7 +192,22 @@ vch_edit(vch, item, echo)
     vch->vpercent = '%';
   }
 
-  vch->vprivate = (vget(b_lines - 1, 0, "是否限制投票名單(Y/N)？[N] ", ans, 3, LCECHO) == 'y') ? ')' : ' ';
+  vch->vprivate = (vget(++row, 0, "是否限制投票名單(Y/N)？[N] ", ans, 3, LCECHO) == 'y') ? ')' : ' ';
+
+  if (vch->vprivate == ' ' && vget(++row, 0, "是否限制投票資格(Y/N)？[N] ", ans, 3, LCECHO) == 'y')
+  {
+    vget(++row, 0, "請問要登入幾次以上才可以參加本次投票？([0]～9999)：", ans, 5, DOECHO);
+    num = atoi(ans);
+    if (num < 0)
+      num = 0;
+    vch->limitlogins = num;
+
+    vget(++row, 0, "請問要發文幾次以上才可以參加本次投票？([0]～9999)：", ans, 5, DOECHO);
+    num = atoi(ans);
+    if (num < 0)
+      num = 0;
+    vch->limitposts = num;
+  }
 }
 
 
@@ -309,7 +328,7 @@ vote_add(xo)
     brd->bvote = (vch.vgamble == '$') ? -1 : 1;
   vch.bstamp = brd->bstamp;
 
-  rec_add(dir, &vch, sizeof(vch));
+  rec_add(dir, &vch, sizeof(VCH));
 
   vmsg("開始投票了！");
   return vote_init(xo);
@@ -582,8 +601,6 @@ vote_join(xo)
       vmsg("您的錢不夠參加賭盤");
       return XO_FOOT;
     }
-    if (vans("是否參加賭盤(Y/N)？[N] ") != 'y')
-      return XO_FOOT;
   }
 
   /* --------------------------------------------------- */
@@ -605,15 +622,21 @@ vote_join(xo)
       vmsg("您已經投過票了！");
       return XO_FOOT;
     }
-    if (vans("是否參加投票(Y/N)？[N] ") != 'y')
-      return XO_FOOT;
   }
 
   /* --------------------------------------------------- */
-  /* 檢查是否在投票名單中				 */
+  /* 檢查投票限制					 */
   /* --------------------------------------------------- */
 
-  if (vch->vprivate == ')')	/* itoc.020117: 私人投票 */
+  if (vch->vprivate == ' ')
+  {
+    if (cuser.numlogins < vch->limitlogins || cuser.numposts < vch->limitposts)
+    {
+      vmsg("您不夠資深喔！");
+      return XO_FOOT;
+    }
+  }
+  else		/* itoc.020117: 私人投票檢查是否在投票名單中 */
   {
     *fname = 'L';
 
@@ -624,6 +647,13 @@ vote_join(xo)
       return XO_FOOT;
     }
   }
+
+  /* --------------------------------------------------- */
+  /* 確認進入投票					 */
+  /* --------------------------------------------------- */
+
+  if (vans(vch->vgamble == ' ' ? "是否參加投票(Y/N)？[N] " : "是否參加賭盤(Y/N)？[N] ") != 'y')
+    return XO_FOOT;
 
   /* --------------------------------------------------- */
   /* 開始投票，顯示投票說明				 */
@@ -915,7 +945,12 @@ keeplog(fnlog, board, title)
 
     strcpy(hdr.title, title);
     strcpy(hdr.owner, str_sysop);
+
+    /* wakefield.081212: 移除原本置底 */
+    /*
     rec_bot(folder, &hdr, sizeof(HDR));
+    */
+    rec_add(folder, &hdr, sizeof(HDR));
 
     btime_update(brd_bno(board));
   }
@@ -1206,7 +1241,6 @@ vote_all()		/* itoc.010414: 投票中心 */
     char title[BTLEN + 1];
     char BM[BMLEN + 1];
     char bvote;
-    int is_BM;			/* 避免先去自己的板有了 STAT_BOARD 再來投票中心任一板變板主 */
   } vbrd_t;
 
   extern char brd_bits[];
@@ -1235,7 +1269,6 @@ vote_all()		/* itoc.010414: 投票中心 */
       strcpy(vb->title, bhead->title);
       strcpy(vb->BM, bhead->BM);
       vb->bvote = bhead->bvote;
-      vb->is_BM = ch & BRD_X_BIT;
       num++;
     }
     cur++;
@@ -1289,21 +1322,48 @@ vote_all()		/* itoc.010414: 投票中心 */
     case '\n':
     case ' ':
     case 'r':
-      redraw = cur + pageno * XO_TALL;	/* 借用 redraw */
+      vb = vbrd + (cur + pageno * XO_TALL);
 
-      vb = vbrd + redraw;
-      strcpy(currboard, vb->brdname);
-      str = vb->BM;
-      sprintf(currBM, "板主：%s", *str <= ' ' ? "徵求中" : str);
-      currbno = brd_bno(currboard);
-      currbattr = (bshm->bcache + currbno)->battr;
+      /* itoc.060324: 等同進入新的看板，XoPost() 有做的事，這裡幾乎都要做 */
+      if (!vb->brdname[0])	/* 已刪除的看板 */
+	break;
 
-      if (vb->is_BM)
-	bbstate |= STAT_BOARD;
-      else
-	bbstate &= ~STAT_BOARD;
+      redraw = brd_bno(vb->brdname);	/* 借用 redraw */
+      if (currbno != redraw)
+      {
+	ch = brd_bits[redraw];
 
-      sprintf(fpath, "brd/%s/%s", vb->brdname, FN_VCH);
+	/* 處理權限 */
+	if (ch & BRD_M_BIT)
+	  bbstate |= (STAT_BM | STAT_BOARD | STAT_POST);
+	else if (ch & BRD_X_BIT)
+	  bbstate |= (STAT_BOARD | STAT_POST);
+	else if (ch & BRD_W_BIT)
+	  bbstate |= STAT_POST;
+
+	mantime_add(currbno, redraw);
+
+	currbno = redraw;
+	bhead = bshm->bcache + currbno;
+	currbattr = bhead->battr;
+	strcpy(currboard, bhead->brdname);
+	str = bhead->BM;
+	sprintf(currBM, "板主：%s", *str <= ' ' ? "徵求中" : str);
+#ifdef HAVE_BRDMATE
+	strcpy(cutmp->reading, currboard);
+#endif
+
+	brd_fpath(fpath, currboard, fn_dir);
+#ifdef AUTO_JUMPPOST
+	xz[XZ_POST - XO_ZONE].xo = xo = xo_get_post(fpath, bhead);	/* itoc.010910: 為 XoPost 量身打造一支 xo_get() */
+#else
+	xz[XZ_POST - XO_ZONE].xo = xo = xo_get(fpath);
+#endif
+	xo->key = XZ_POST;
+	xo->xyz = bhead->title;
+      }
+
+      sprintf(fpath, "brd/%s/%s", currboard, FN_VCH);
       xz[XZ_VOTE - XO_ZONE].xo = xo = xo_new(fpath);
       xz[XZ_VOTE - XO_ZONE].cb = vote_cb;
       xover(XZ_VOTE);

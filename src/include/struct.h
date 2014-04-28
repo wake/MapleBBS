@@ -14,17 +14,15 @@
 /* screen control */
 
 #define STRLEN		80	/* Length of most string data */
-#define ANSILINELEN	250	/* Maximum Screen width in chars */
+#define ANSILINELEN	500	/* Maximum Screen width in chars，不能超過 1023 */
 
-/* itoc.031123: 螢幕的寬度設為 80 也無妨，只是有些 telnet term 在貼上文字太長時，
-                會自動斷行在 79，所以在此就從其設定 */
-#define SCR_WIDTH	79	/* edit/more/talk/visio screen width */
+#define SCR_WIDTH	78	/* edit/talk/camera screen width */
 
 #define TAB_STOP	4	/* 按 TAB 換成幾格空白 (要是 2 的次方) */
 #define TAB_WIDTH	(TAB_STOP - 1)
 
 #define T_LINES		50	/* maximum total lines */
-#define T_COLS		120	/* maximum total columns，要比 ANSILINELEN 小 */
+#define T_COLS		240	/* maximum total columns，要比 ANSILINELEN 小 */ /* 041205.Lacool: 120 -> 240 */
 
 /* board structure */
 
@@ -127,6 +125,23 @@ typedef struct	/* 註冊表單 (Register From) 256 bytes */
 
 
 /* ----------------------------------------------------- */
+/* control of board class / color : 256 bytes            */
+/* ----------------------------------------------------- */
+
+/* 041030.Lacool:看板類別結構 */
+/*
+typedef struct CLS
+{
+ struct CLS *next;
+ struct CLS *prev;
+ int id;                        /* 類別順序編號 *
+ char name[5];                  /* 類別名稱 *
+ char color[8];                 /* 類別顏色 *
+}    CLS;
+*/
+
+
+/* ----------------------------------------------------- */
 /* control of board vote : 256 bytes			 */
 /* ----------------------------------------------------- */
 
@@ -153,7 +168,10 @@ typedef struct VoteControlHeader
   int maxblt;			/* 每人可投幾票 */
   int price;			/* 每張賭票的售價 */
 
-  char nouse[96];
+  int limitlogins;		/* 限制要登入超過幾次以上的使用者才能投票 */
+  int limitposts;		/* 限制要發文超過幾次以上的使用者才能投票 */
+
+  char nouse[88];
 }      VCH;
 
 
@@ -285,7 +303,7 @@ typedef struct
   time_t tissue;		/* 發支票時間 */
   int money;
   int gold;
-  char reason[20];
+  char reason[20];		/* "[動作] brdname/userid"，假設 BNLEN、IDLEN 不超過 12 */
 }      PAYCHECK;
 
 
@@ -405,6 +423,7 @@ typedef struct MF
 #define	MF_FOLDER   	0x04	/* 卷宗 */
 #define	MF_GEM      	0x08	/* 精華區捷徑 */
 #define MF_LINE		0x10	/* 分隔線 */
+#define MF_CLASS	0x20	/* 分類群組 */
 
 #endif  /* MY_FAVORITE */
 
@@ -466,6 +485,11 @@ typedef struct
 {
   int shot[MOVIE_MAX];	/* Thor.980805: 合理範圍為 0..MOVIE_MAX - 1 */
   char film[MOVIE_SIZE];
+
+  /* wake.081227: 自訂分類顏色 */
+  char classtable[100][BCLEN + 1];
+  char colortable[100][20];
+
   char today[16];
 } FCACHE;
 
@@ -489,7 +513,9 @@ typedef struct
 #define FILM_NEWUSER	13	/* 新手上路須知 */
 #define FILM_TRYOUT	14	/* 密碼錯誤 */
 #define FILM_POST	15	/* 文章發表綱領 */
-#define FILM_MOVIE	16	/* 動態看板 FILM_MOVIE 要放在最後面 */
+#define FILM_WELCOME	16	/* 041125.Lacool: 進站畫面 */
+#define FILM_ANNOUNCE	17	/* wake.080603: 進站兩行新聞 */
+#define FILM_MOVIE	18	/* 動態看板 FILM_MOVIE 要放在最後面 */
 
 
 typedef struct
@@ -533,14 +559,14 @@ typedef struct
 
 typedef struct screenline
 {
-  uschar oldlen;		/* previous line length */
-  uschar len;			/* current length of line */
-  uschar width;			/* padding length of ANSI codes */
-  uschar mode;			/* status of line, as far as update */
-  uschar smod;			/* start of modified data */
-  uschar emod;			/* end of modified data */
-  uschar sso;			/* start of standout data */
-  uschar eso;			/* end of standout data */
+  int oldlen;			/* previous line length */
+  int len;			/* current length of line */
+  int width;			/* padding length of ANSI codes */
+  int smod;			/* start of modified data */
+  int emod;			/* end of modified data */
+  int sso;			/* start of standout data */
+  int eso;			/* end of standout data */
+  uschar mode;			/* status of line, as far as update */	/* 由於 SL_* 的 mode 不超過八個，故用 uschar 即可 */
   uschar data[ANSILINELEN];
 }          screenline;
 
@@ -665,6 +691,7 @@ typedef struct
 
 
 #define INN_NOINCOME	0x0001
+#define INN_ERROR	0x0004
 
 typedef struct
 {

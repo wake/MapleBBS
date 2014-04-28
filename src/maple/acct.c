@@ -246,27 +246,38 @@ bm_list(userid)			/* 顯示 userid 是哪些板的板主 */
 }
 
 
-#ifdef LOG_ADMIN	/* Thor.990405: log permission modify */
 static void
-perm_log(u, oldl)
-  ACCT *u;
-  int oldl;
+adm_log(old, new)
+  ACCT *old, *new;
 {
   int i;
-  usint level;
-  char buf[128];
+  usint bit, oldl, newl;
+  char *userid, buf[80];
 
-  for (i = 0, level = 1; i < NUMPERMS; i++, level <<= 1)
+  userid = new->userid;
+  alog("異動資料", userid);
+
+  if (strcmp(old->passwd, new->passwd))
+    alog("異動密碼", userid);
+
+  if ((old->money != new->money) || (old->gold != new->gold))
   {
-    if ((u->userlevel & level) != (oldl & level))
+    sprintf(buf, "%-13s銀%d→%d 金%d→%d", userid, old->money, new->money, old->gold, new->gold);
+    alog("異動錢幣", buf);
+  }
+
+  /* Thor.990405: log permission modify */
+  oldl = old->userlevel;
+  newl = new->userlevel;
+  for (i = 0, bit = 1; i < NUMPERMS; i++, bit <<= 1)
+  {
+    if ((newl & bit) != (oldl & bit))
     {
-      sprintf(buf, "%15s %s %-15s (%s) by %s\n", u->userid, 
-	(u->userlevel & level) ? BIT_ON : BIT_OFF, perm_tbl[i], Now(), cuser.userid);
-      f_cat(FN_RUN_PERM, buf);
+      sprintf(buf, "%-13s%s %s", userid, (newl & bit) ? BIT_ON : BIT_OFF, perm_tbl[i]);
+      alog("異動權限", buf);
     }
   }
 }
-#endif
 
 
 void
@@ -450,7 +461,7 @@ acct_setup(u, adm)
       break;
   };
 
-  /* itoc.010408: 新增生日/性別欄位，不強迫使用者填 */
+  /* itoc.010408: 新增生日/性別欄位，不強迫使用者填 (允許填 0) */
   i++;
   do
   {
@@ -458,21 +469,21 @@ acct_setup(u, adm)
     if (!vget(i, 0, buf, buf, 3, DOECHO))
       break;
     x.year = atoi(buf);
-  } while (x.year < 1 || x.year > 99);
+  } while (x.year < 0 || x.year > 99);
   do
   {
     sprintf(buf, "生日－ %02d 月：", u->month);
     if (!vget(i, 0, buf, buf, 3, DOECHO))
       break;
     x.month = atoi(buf);
-  } while (x.month < 1 || x.month > 12);
+  } while (x.month < 0 || x.month > 12);
   do
   {
     sprintf(buf, "生日－ %02d 日：", u->day);
     if (!vget(i, 0, buf, buf, 3, DOECHO))
       break;
     x.day = atoi(buf);
-  } while (x.day < 1 || x.day > 31);
+  } while (x.day < 0 || x.day > 31);
 
   i++;
   sprintf(buf, "性別 (0)中性 (1)男性 (2)女性：[%d] ", u->sex);
@@ -553,7 +564,7 @@ set_perm:
     }
   }
 
-  if (vans(msg_sure_ny) != 'y')
+  if (!memcmp(&x, u, sizeof(ACCT)) || vans(msg_sure_ny) != 'y')
     return;
 
   if (adm)
@@ -567,10 +578,6 @@ set_perm:
       rename(buf, dst);
       /* Thor.990416: 特別注意! .USR並未一併更新, 可能有部分問題 */
     }
-#ifdef LOG_ADMIN
-    /* lkchu.981201: security log */
-    perm_log(&x, u->userlevel);
-#endif
 
     /* itoc.010811: 動態設定線上使用者 */
     /* 被站長改過資料的線上使用者(包括站長自己)，其 cutmp->status 會被加上 STATUS_DATALOCK
@@ -578,6 +585,9 @@ set_perm:
     /* 在站長修改過才上線的 ID 因為其 cutmp->status 沒有 STATUS_DATALOCK 的旗標，
        所以將可以繼續存取，所以線上如果同時有修改前、修改後的同一隻 ID multi-login，也是無妨。 */
     utmp_admset(x.userno, STATUS_DATALOCK | STATUS_COINLOCK);
+
+    /* lkchu.981201: security log */
+    adm_log(u, &x);
   }
   else
   {
@@ -589,7 +599,7 @@ set_perm:
     }
   }
 
-  memcpy(u, &x, sizeof(x));
+  memcpy(u, &x, sizeof(ACCT));
   acct_save(u);
 }
 
@@ -687,31 +697,34 @@ brd_set(brd, row)
   BRD *brd;
   int row;
 {
-  int i, dirty, len;
-  char *data, buf[80], userid[IDLEN + 1];
+  int i, BMlen, len;
+  char *brdname, buf[80], userid[IDLEN + 2];
   ACCT acct;
 
   i = row;
-  data = brd->brdname;
-  strcpy(buf, data);
+  brdname = brd->brdname;
+  strcpy(buf, brdname);
 
   for (;;)
   {
-    if (!vget(i, 0, MSG_BID, data, BNLEN + 1, GCARRY))
+    if (!vget(i, 0, MSG_BID, brdname, BNLEN + 1, GCARRY))
     {
-      if (i == 1)
+      if (i == 1)	/* 開新板若無輸入板名表示離開 */
 	return -1;
 
-      strcpy(data, buf);	/* Thor:若是清空則設為原名稱 */
+      strcpy(brdname, buf);	/* Thor: 若是清空則設為原名稱 */
       continue;
     }
 
-    if (!strcmp(buf, data) && valid_brdname(data))	/* Thor: 與原名同則跳過 */
+    if (!valid_brdname(brdname))
+      continue;
+
+    if (!str_cmp(buf, brdname))	/* Thor: 與舊板原名相同則跳過 */
       break;
 
-    if (brd_bno(data) >= 0)
-      outs("\n錯誤! 板名雷同");
-    else if (valid_brdname(data))
+    if (brd_bno(brdname) >= 0)
+      outs("\n錯誤！板名雷同");
+    else
       break;
   }
 
@@ -729,36 +742,62 @@ brd_set(brd, row)
   prints("目前板主為 %s\n請輸入新的板主名單，或按 [Return] 不改", brd->BM);
 
   strcpy(buf, brd->BM);
-  dirty = strlen(buf);
+  BMlen = strlen(buf);
 
   while (vget(i, 0, "請輸入板主，結束請按 Enter，清掉所有板主請打「無」：", userid, IDLEN + 1, DOECHO))
   {
     if (!strcmp(userid, "無"))
     {
       buf[0] = '\0';
-      dirty = 0;
+      BMlen = 0;
     }
-    else if (acct_load(&acct, userid) >= 0 && !is_bm(buf, acct.userid))	/* 輸入新板主 */
+    else if (is_bm(buf, userid))	/* 刪除舊有的板主 */
     {
-      if (dirty)
+      len = strlen(userid);
+      if (BMlen == len)
       {
-	len = strlen(acct.userid) + 1;	/* '/' + userid */
-	if (dirty + len > BMLEN)
+	buf[0] = '\0';
+      }
+      else if (!str_cmp(buf + BMlen - len, userid))	/* 名單上最後一位，ID 後面不接 '/' */
+      {
+	buf[BMlen - len - 1] = '\0';			/* 刪除 ID 及前面的 '/' */
+	len++;
+      }
+      else						/* ID 後面會接 '/' */
+      {
+	str_lower(userid, userid);
+	strcat(userid, "/");
+	len++;
+	brdname = str_str(buf, userid);
+        strcpy(brdname, brdname + len);
+      }
+      BMlen -= len;
+    }
+    else if (acct_load(&acct, userid) >= 0 && !is_bm(buf, userid))	/* 輸入新板主 */
+    {
+      len = strlen(userid);
+      if (BMlen)
+      {
+	len++;		/* '/' + userid */
+	if (BMlen + len > BMLEN)
 	{
 	  vmsg("板主名單過長，無法將這 ID 設為板主");
 	  continue;
 	}
-	sprintf(buf + dirty, "/%s", acct.userid);
-	dirty += len;
+	sprintf(buf + BMlen, "/%s", acct.userid);
+	BMlen += len;
       }
       else
       {
 	strcpy(buf, acct.userid);
-	dirty = strlen(buf);
+	BMlen = len;
       }      
 
       acct_setperm(&acct, PERM_BM, 0);
     }
+    else
+      continue;
+
     move(i - 2, 0);
     prints("目前板主為 %s", buf);
     clrtoeol();
@@ -836,7 +875,13 @@ brd_new(brd)
   if (vans(msg_sure_ny) != 'y')
     return -1;
 
-  time(&(brd->bstamp));
+  if (brd_bno(brd->brdname) >= 0)
+  {
+    vmsg("錯誤！板名雷同，可能有其他站務剛開啟此板");
+    return -1;
+  }
+
+  time(&brd->bstamp);
   if ((bno = brd_bno("")) >= 0)
   {
     rec_put(FN_BRD, brd, sizeof(BRD), bno, NULL);
@@ -937,6 +982,8 @@ brd_edit(bno)
       bname = bhdr->brdname;
       if (*bname)	/* itoc.000512: 同時砍除同一個看板會造成精華區、看板全毀 */
       {
+	alog("刪除看板", bname);
+
 	gem_fpath(src, bname, NULL);
 	f_rm(src);
 	f_rm(src + 4);
@@ -945,10 +992,11 @@ brd_edit(bno)
 	sprintf(newbh.title, "[%s] deleted by %s", bname, cuser.userid);
 	memcpy(bhdr, &newbh, sizeof(BRD));
 	rec_put(FN_BRD, &newbh, sizeof(BRD), bno, NULL);
-	blog("Admin", newbh.brdname);
+
 	/* itoc.050531: 砍板會造成看板不是按字母排序，所以要修正 numberOld */
 	if (bshm->numberOld > bno)
 	  bshm->numberOld = bno;
+
 	vmsg("刪板完畢");
       }
     }

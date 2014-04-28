@@ -21,8 +21,6 @@
 
 #include "bbs.h"
 
-#undef	TRACE
-#define	TRACE	logit
 
 /* Thor.990221: 儘量 fflush 出 log */
 #undef DEBUG
@@ -63,10 +61,11 @@
 #define MAX_HOST_CONN	2
 
 
-#define SPAM_TITLE_LIMIT	50	/* 同一個標題寄進來超過 50 次就擋掉 */
-#define SPAM_MHOST_LIMIT	1000	/* 同一個 @domain 寄進來超過 1000 封信就擋掉 */
-#define SPAM_MFROM_LIMIT	100	/* 同一個 from 寄進來超過 100 封信就擋掉，如遇有標題、長度類似者加權；標題完全相同者加權更多 */
-#define SPAM_FORGE_LIMIT	10	/* 不是寫錯的，是故意的 */
+#define SPAM_MHOST_LIMIT	1000	/* 同一個 @host 寄進來超過 1000 封信，就將此 @host 視為廣告商 */
+#define SPAM_MFROM_LIMIT	128	/* 同一個 from 寄進來超過 128 封信，就將此 from 視為廣告商 */
+
+#define SPAM_TITLE_LIMIT	50	/* 同一個標題寄進來超過 50 次就特別記錄 */
+#define SPAM_FORGE_LIMIT	10	/* 同一個 @domain 錯 10 次以上，就認定不是筆誤，而是故意的 */
 
 
 /* Thor.000425: POSIX 用 O_NONBLOCK */
@@ -110,7 +109,7 @@ typedef struct Agent
   int state;
   int mode;
   int letter;			/* 1:寄給 *.bbs@  0:寄給 *.brd@ */
-  unsigned int ip_addr;
+  u_long ip_addr;
 
   time_t uptime;
   time_t tbegin;
@@ -300,6 +299,7 @@ agent_reply(ap, msg)
 /* ----------------------------------------------------- */
 
 
+#ifdef EMAIL_JUSTIFY
 static int
 is_badid(userid)
   char *userid;
@@ -346,6 +346,7 @@ acct_fetch(userid, acct)
   }
   return fd;
 }
+#endif
 
 
 /* ----------------------------------------------------- */
@@ -461,11 +462,12 @@ bbs_biff(userno)
 typedef struct HashEntry
 {
   struct HashEntry *next;
-  unsigned int hv;		/* hashing value */
+  usint hv;			/* hashing value */
   time_t uptime;
-  unsigned int visit;		/* reference counts */
-  unsigned int score;
-  void *xyz;			/* other stuff */
+  int visit;			/* reference counts */
+  int score;
+  int fsize;			/* file size (只有在 title_ht 才有用) */
+  struct HashEntry *ttl;	/* title (只有在 mfrom_ht 才有用) */
   char key[0];
 }         HashEntry;
 
@@ -487,7 +489,7 @@ he_hash(key, len)
   const unsigned char *key;
   int len;			/* 0 : string */
 {
-  unsigned int seed, shft;
+  usint seed, shft;
 
   seed = HASH_TABLE_SEED;
   shft = 0;
@@ -566,7 +568,7 @@ ht_free(ht)
     {
       next = node->next;
       if (len > 0)
-	free(node->xyz);
+	free(node->ttl);
       free(node);
       node = next;
     }
@@ -594,7 +596,7 @@ ht_apply(ht, func)
       {
 	*hp = he->next;
 	if (len > 0)
-	  free(he->xyz);
+	  free(he->ttl);
 	free(he);
 	ht->tale--;
       }
@@ -613,7 +615,7 @@ ht_look(ht, key)
   const void *key;
 {
   int len;
-  unsigned int hv;
+  usint hv;
   HashEntry *he;
   int (*comp) ();
 
@@ -639,7 +641,7 @@ ht_add(ht, key)
 {
   HashEntry *he, **hp;
   int len;
-  unsigned int hv;
+  usint hv;
   int (*comp) ();
 
   len = ht->keylen;
@@ -661,7 +663,8 @@ ht_add(ht, key)
 	he->next = NULL;
 	he->visit = 0;
 	he->score = 0;
-	he->xyz = 0;
+	he->fsize = 0;
+	he->ttl = NULL;
 	memcpy(he->key, key, len);
 	ht->tale++;
 	ht->leak++;
@@ -1063,7 +1066,12 @@ visit_fresh()
   hdr.xmode = POST_MARKED;
   strcpy(hdr.owner, "<BMTA>");
   strcpy(hdr.title, "統計資料");
+
+  /* wakefield.081212: 移除原本置底 */
+  /*
   rec_bot(folder, &hdr, sizeof(HDR));
+  */
+  rec_add(folder, &hdr, sizeof(HDR));
 
   update_btime(BN_JUNK);
 }
@@ -1117,7 +1125,12 @@ mta_memo(ap, mark)
 
   strcpy(hdr.owner, "<BMTA>");
   strcpy(hdr.title, memo);
+
+  /* wakefield.081212: 移除原本置底 */
+  /*
   rec_bot(folder, &hdr, sizeof(HDR));
+  */
+  rec_add(folder, &hdr, sizeof(HDR));
 
   update_btime(BN_JUNK);
 }
@@ -1264,7 +1277,12 @@ bbs_brd(ap, data, brdname)	/* itoc.030323: 寄信給看板 */
   hdr.xmode = POST_INCOME;
   str_ncpy(hdr.owner, author, sizeof(hdr.owner));
   str_ncpy(hdr.title, title, sizeof(hdr.title));
+
+  /* wakefield.081212: 移除原本置底 */
+  /*
   rec_bot(folder, &hdr, sizeof(HDR));
+  */
+  rec_add(folder, &hdr, sizeof(HDR));
 
   update_btime(brdname);
 
@@ -1414,7 +1432,7 @@ str_cpy(dst, src, n)
   {
     cc = *src;
     if (cc >= 'A' && cc <= 'Z')
-      cc += 0x20;
+      cc |= 0x20;
     *dst = cc;
     if ((len > n) || (!cc))	/* lkchu.990511: 避免 overflow */
       break;
@@ -1467,7 +1485,7 @@ acl_add(root, filter)
   {
     cc = *filter++;
     if (cc >= 'A' && cc <= 'Z')
-      cc += 0x20;
+      cc |= 0x20;
   } while (*str++ = cc);
 
   return ax;
@@ -1679,6 +1697,8 @@ mta_from(ap, str)
       
       if (is_forge(tail))	/* Thor.990811: 假造的, 想都別想 */
 	return NULL;
+
+      /* 檢查 From: 是否在黑白名單上 */
       if (!(ap->mode & (AM_VALID | AM_BBSADM)) && acl_spam(head, tail))
       {
 	tail[-1] = '@';
@@ -1760,20 +1780,6 @@ mta_subject(ap, str)
 
 
 static inline int
-is_almost(size, used)
-  int *size;
-  int used;
-{
-  int delta;
-
-  delta = (*size) - used;
-  *size = used;
-
-  return (delta >= -16 && delta <= 16);
-}
-
-
-static inline int
 is_host_alias(addr)
   char *addr;
 {
@@ -1840,7 +1846,7 @@ mta_boundary(ap, str, boundary)
       /* *boundary++ = '\n'; */	/* Thor.980907: 之後會被無意間跳過 */
       *boundary = 0;
     }
-    TRACE("MULTI", base);
+    logit("MULTI", base);
   }
 
   while (cc = *str)
@@ -1964,7 +1970,6 @@ mta_mailer(ap)
   char boundary[512] = "--";
   int cc, mode;
   RCPT *rcpt;
-  HashEntry *he, *hx;
 
   mode = ap->mode;
   data = ap->data + 1;		/* skip leading stuff */
@@ -1981,18 +1986,13 @@ mta_mailer(ap)
       data = mta_from(ap, data);
       if (!data)
       {
-	agent_reply(ap, "550 spam mail");
+	agent_reply(ap, "550 you are not in my access list");
 	return -1;
       }
     }
     else if (!str_ncmp(data, "Subject:", 8))
     {
       data = mta_subject(ap, data + 8);
-      if (!data)
-      {
-	agent_reply(ap, "550 spam mail");
-	return -1;
-      }
     }
     else if (!str_ncmp(data, "Content-Transfer-Encoding:", 26))
     {				/* Thor.980901: 解 rfc1522 body code */
@@ -2007,7 +2007,7 @@ mta_mailer(ap)
       char *content = data + 14;
       if (*content != '\0' && str_ncmp(content, "text/plain", 10))
       {
-	agent_reply(ap, "550 spam mail");
+	agent_reply(ap, "550 we only accept plain text");
 	return -1;
       }
 #endif
@@ -2018,7 +2018,7 @@ mta_mailer(ap)
 	mm_getcharset(data + 13, charset, sizeof(charset));
 	if (str_cmp(charset, MYCHARSET) && str_cmp(charset, "us-ascii"))
 	{
-	  agent_reply(ap, "550 spam mail");
+	  agent_reply(ap, "550 non-supported charset");
 	  return -1;
 	}
       }
@@ -2110,10 +2110,11 @@ mta_mail_body:
   /* --------------------------------------------------- */
   /* decode mail body					 */
   /* --------------------------------------------------- */
+
   /* Thor.980901: decode multipart body */
   if (boundary[2])
   {
-    /* TRACE("MULTIDATA",data); */
+    /* logit("MULTIDATA",data); */
     cc = multipart(data, data, boundary);
     if (cc > 0)
       ap->used = (data - ap->data) + cc;	/* (data - ap->data) 是 header 長度，cc 是信內容的長度 */
@@ -2133,7 +2134,7 @@ mta_mail_body:
     if (cc > 0)
       ap->used = (data - ap->data) + cc;	/* (data - ap->data) 是 header 長度，cc 是信內容的長度 */
 
-    /* TRACE("DECODEDATA", data); */
+    /* logit("DECODEDATA", data); */
   }
 
   /* --------------------------------------------------- */
@@ -2141,49 +2142,80 @@ mta_mail_body:
   /* --------------------------------------------------- */
 
   addr = ap->addr;
-  if ((str = strchr(addr, '@')) && str_ncmp("mailer-daemon@", addr, 14))
+  if ((str = strchr(addr, '@')) && str_ncmp(addr, "mailer-daemon@", 14))
   {
-    int aScore, hScore;
+    HashEntry *he, *hx;
+    int nrcpt, score, delta;
     time_t uptime;
 
     uptime = ap->uptime;
-    he = ht_add(mfrom_ht, addr);
-    he->uptime = uptime;
+    nrcpt = ap->nrcpt;
 
-    aScore = ap->nrcpt;
-    if (aScore > 0)
+    /* -------------------------------------------------- */
+    /* 檢查這個 @host 寄進來的信有無超過 SPAM_MHOST_LIMIT */
+    /* -------------------------------------------------- */
+
+    he = ht_add(mhost_ht, ++str);
+    he->uptime = uptime;
+    he->score += (nrcpt > 0) ? nrcpt : 1;	/* 一個收件人都沒有也算一次訪問 */
+
+    if (he->score >= SPAM_MHOST_LIMIT)
     {
-      hScore = aScore;
+      unmail_root = acl_add(unmail_root, str);
+      spam_add(he);
+      fprintf(flog, "SPAM-H\t[%d] %s\n", ap->sno, str);
+
+      sprintf(ap->memo, "SPAM : %s", str);
+      *delimiter = '\n';
+    }
+
+    /* -------------------------------------------- */
+    /* 檢查這個 title 的信有無超過 SPAM_TITLE_LIMIT */
+    /* -------------------------------------------- */
+
+    if (nrcpt > 0)
+    {
       hx = ht_add(title_ht, str_ttl(ap->title));
       hx->uptime = uptime;
-      hx->visit += aScore - 1;
-      hx->score += aScore;
+      hx->visit += nrcpt - 1;	/* title_ht 的 visit 是記錄這標題的信有幾人收過 */
+      hx->score += nrcpt;
       if (hx->score >= SPAM_TITLE_LIMIT)
-      {
 	fprintf(flog, "TITLE\t[%d] %s\n", ap->sno, ap->title);
-	aScore += aScore;
-      }
-
-      if (is_almost((int *) &hx->xyz, ap->used))	/* 標題雷同、長度亦類似 */
-      {
-	aScore += SPAM_MFROM_LIMIT >> 4;
-      }
-
-      if (he->xyz == hx)	/* title / from 皆同 */
-      {
-	aScore += SPAM_MFROM_LIMIT >> 3;
-      }
-      else
-      {
-	he->xyz = hx;		/* title_ht 指向目前之 From */
-      }
+ 
+      /* 如果這次來信和上次同標題的來信檔案差不多大，那麼這次來信很可能是廣告信 */
+      score = nrcpt;
+      delta = hx->fsize - ap->used;
+      if (delta >= -16 && delta <= 16)
+	score +=  SPAM_MFROM_LIMIT >> 6;
+      hx->fsize = ap->used;		/* 記錄用這標題的最後一封信之檔案大小 */
     }
     else
     {
-      hScore = aScore = 1;
+      score = 1;
+    }
+    
+    /* ------------------------------------------------- */
+    /* 檢查這個 from 寄進來的信有無超過 SPAM_MFROM_LIMIT */
+    /* ------------------------------------------------- */
+
+    he = ht_add(mfrom_ht, addr);
+    he->uptime = uptime;
+
+    if (nrcpt > 0)	/* 有 title_ht 的 HashEntry hx-> */
+    {
+      /* itoc.060420.註解: 有些使用者會從別的 BBS 站一次轉寄整個討論串的文章(同標題)
+         來本站，就會因為下面這條 rule 而被視為廣告商 */
+
+      /* 如果這個 from 在這次來信和他自己上次來信的標題相同，那麼這個 from 很可能是廣告商 */
+      if (he->ttl == hx)
+	score += SPAM_MFROM_LIMIT >> 5;
+      else
+	he->ttl = hx;		/* 記錄這個 from 在這次來信的標題 */
     }
 
-    if ((he->score += aScore) >= SPAM_MFROM_LIMIT)
+    he->score += score;
+
+    if (he->score >= SPAM_MFROM_LIMIT)
     {
       unmail_root = acl_add(unmail_root, addr);
       spam_add(he);
@@ -2195,20 +2227,7 @@ mta_mail_body:
 
     /* ------------------------------------------------- */
 
-    he = ht_add(mhost_ht, ++str);
-    he->uptime = uptime;
-
-    if ((he->score += hScore) >= SPAM_MHOST_LIMIT)
-    {
-      unmail_root = acl_add(unmail_root, str);
-      spam_add(he);
-      fprintf(flog, "SPAM-H\t[%d] %s\n", ap->sno, str);
-
-      sprintf(ap->memo, "SPAM : %s", str);
-      *delimiter = '\n';
-    }
-
-    if (*delimiter)
+    if (*delimiter)	/* 若 *delimiter == '\n'，表示超過 SPAM_*_LIMIT */
     {
       MYDOG;
       mta_memo(ap, 0);
@@ -2524,12 +2543,13 @@ cmd_mail(ap)
   ht_add(mfrom_ht, ptr);
 
   MYDOG;
+  /* 檢查 MAIL FROM: 是否在黑白名單上 */
   if (acl_spam(user, domain))
   {
     ap->xspam++;
     ap->mode |= AM_SPAM;
     agent_log(ap, "SPAM-M", ptr);
-    agent_reply(ap, "550 spam mail");
+    agent_reply(ap, "550 you are not in my access list");
     return;
   }
 
@@ -2661,33 +2681,40 @@ cmd_rcpt(ap)
   ht_add(mrcpt_ht, user);
 
   cc = is_rcpt(user, &letter);
-  if (cc < 0)
+
+  if (cc < 0)		/* 無此使用者或看板 */
   {
     ap->xerro++;
-    agent_reply(ap, "550 no such user");
+    agent_reply(ap, "550 no such user or board");
     return;
   }
 
-  if (cc)
+  if (cc)		/* AM_VALID、AM_BBSADM */
   {
     ap->mode |= cc;
   }
-  else
-  {				/* Thor.991130.註解: 一般 *.bbs@ 或 *.brd@ 情況 */
+  else			/* Thor.991130.註解: 一般 *.bbs@ 或 *.brd@ 情況 */
+  {
 #if 1	/* Thor.981227: 確定不是 bbsreg 才擋，delay 擋連線 */
     /* format: sprintf(servo_ident, "[%d] %s ip:%08x", ++servo_sno, rhost, csin.sin_addr.s_addr); */
     char rhost[256], *s;
 
-    s = strchr(ap->ident, ' ');
-    strcpy(rhost, s + 1);
-    if (s = strchr(rhost, ' '))
-      *s = '\0';
-    if (acl_spam("*", rhost))
+    if (s = strchr(ap->ident, ' '))
     {
-      ap->mode |= AM_SPAM;
-      agent_log(ap, "SPAM-M", rhost);
-      agent_reply(ap, "550 deny connection");
-      return;
+      strcpy(rhost, s + 1);
+      if (s = strchr(rhost, ' '))
+      {
+	*s = '\0';
+
+	/* 檢查 發信的機器 是否在黑白名單上 */
+	if (acl_spam("*", rhost))
+	{
+	  ap->mode |= AM_SPAM;
+	  agent_log(ap, "SPAM-M", rhost);
+	  agent_reply(ap, "550 deny connection");
+	  return;
+	}
+      }
     }
 #endif
 
@@ -2706,7 +2733,7 @@ cmd_rcpt(ap)
     rcpt = (RCPT *) malloc(sizeof(RCPT) + cc);
     MYDOG;
     if (!rcpt)			/* Thor.990205: 記錄空間不夠 */
-      TRACE("ERROR", "Not enough space in cmd_rcpt()");
+      logit("ERROR", "Not enough space in cmd_rcpt()");
 
     rcpt->rnext = ap->rcpt;
     memcpy(rcpt->userid, user, cc);
@@ -3102,7 +3129,7 @@ agent_recv(ap)
     ap->used = dest - data;
 
     MYDOG;
-    /* Thor.981223: 不擋 bbsreg，將 untrust.acl 分離出來 */
+    /* Thor.981223: 確定不是 bbsreg 才擋 */
     if (!(mode & (AM_VALID | AM_BBSADM)) && (mode & AM_SPAM))
     {
       sprintf(ap->memo, "SPAM : %s", ap->from);
@@ -3891,7 +3918,7 @@ main(argc, argv)
     if (FD_ISSET(0, &rset))
     {
       /* Thor.990319: check maximum connection number */
-      unsigned int ip_addr;
+      u_long ip_addr;
       MYDOG;
       sock = agent_accept();
       MYDOG;
@@ -3939,7 +3966,7 @@ main(argc, argv)
 	  agent = (Agent *) malloc(sizeof(Agent));
 	  MYDOG;
 	  if (!agent)		/* Thor.990205: 記錄空間不夠 */
-	    TRACE("ERROR", "Not enough space in main()");
+	    logit("ERROR", "Not enough space in main()");
 	}
 
 	*FBI = agent;
@@ -3968,7 +3995,7 @@ main(argc, argv)
 	agent->data = (char *) malloc(MIN_DATA_SIZE);
 	MYDOG;
 	if (!agent->data)	/* Thor.990205: 記錄空間不夠 */
-	  TRACE("ERROR", "Not enough space in agent->data");
+	  logit("ERROR", "Not enough space in agent->data");
 	sprintf(agent->data, "220 " MYHOSTNAME " SMTP ready %s\r\n", servo_ident);	/* Thor.981001: 不用 enhanced SMTP */
 	agent->used = strlen(agent->data);
 	agent->size = MIN_DATA_SIZE;

@@ -269,7 +269,7 @@ ptt.twbbs.org:23:PTT
 
     outs("║─────────────────────────────────────║\n"
       "║ \033[1;31m注意：\033[m當您選擇了站台後，螢幕像當機一樣不動了，表示現在無法登入對方主機， ║\n"
-      "║       請稍候 telnet connect time out 後會自動退出。                      ║\n"
+      "║       請稍候 telnet connect time out 後會自動退出或按 \033[1;33m^]\033[m 可以強迫斷線。  ║\n"
       "╰═════════════════════════════════════╯");
 
     vget(b_lines, 0, "請選擇一個連線站台：[Q] ", buf, 3, DOECHO);

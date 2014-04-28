@@ -58,7 +58,18 @@ extern time_t mode_lastchange;
 
 
 void
-blog(mode, msg)
+alog(mode, msg)		/* Admin 行為記錄 */
+  char *mode, *msg;
+{
+  char buf[512];
+
+  sprintf(buf, "%s %s %-13s%s\n", Now(), mode, cuser.userid, msg);
+  f_cat(FN_RUN_ADMIN, buf);
+}
+
+
+void
+blog(mode, msg)		/* BBS 一般記錄 */
   char *mode, *msg;
 {
   char buf[512];
@@ -86,8 +97,7 @@ u_exit(mode)
   char fpath[80];
   ACCT tuser;
 
-  if (currbno >= 0 && bshm->mantime[currbno] > 0)
-    bshm->mantime[currbno]--;	/* 退出最後看的那個板 */
+  mantime_add(currbno, -1);	/* 退出最後看的那個板 */
 
   utmp_free(cutmp);		/* 釋放 UTMP shm */
 
@@ -233,8 +243,9 @@ is_badid(userid)
 }
 
 
+#if 0
 static int
-uniq_userno(fd)
+uniq_userno(fd)			/* 找 .USR 前面空的 userno */
   int fd;
 {
   char buf[4096];
@@ -261,6 +272,19 @@ uniq_userno(fd)
 
   return userno;
 }
+#endif
+
+
+static int
+uniq_userno(fd)
+  int fd;
+{
+  struct stat st;
+
+  fstat(fd, &st);
+  lseek(fd, 0, SEEK_END);
+  return (st.st_size / sizeof(SCHEMA)) + 1;
+}
 
 
 static void
@@ -272,6 +296,8 @@ acct_apply()
   int try, fd;
 
   film_out(FILM_APPLY, 0);
+
+  //sql_account_create();
 
   memset(&cuser, 0, sizeof(ACCT));
   userid = cuser.userid;
@@ -427,6 +453,7 @@ extern void talk_rqst();
 extern void bmw_rqst();
 
 
+#ifdef HAVE_WHERE
 static int		/* 1:在list中 0:不在list中 */
 belong_list(filelist, key, desc)
   char *filelist, *key, *desc;
@@ -438,7 +465,7 @@ belong_list(filelist, key, desc)
   rc = 0;
   if (fp = fopen(filelist, "r"))
   {
-    while (fgets(buf, 80, fp))
+    while (fgets(buf, sizeof(buf), fp))
     {
       if (buf[0] == '#')
 	continue;
@@ -464,6 +491,7 @@ belong_list(filelist, key, desc)
   }
   return rc;
 }
+#endif
 
 
 static void
@@ -493,8 +521,8 @@ utmp_setup(mode)
 #ifdef GUEST_NICK
   if (!cuser.userlevel)		/* guest */
   {
-    char nick[9][5] = {"遊子", "水滴", "訪客", "補帖", "豬頭", "影子", "病毒", "童年", "石像"};
-    sprintf(cuser.username, "太陽下的%s", nick[ap_start % 9]);
+    char nick[9][5] = {"遺民", "月獸", "幽光", "石龍", "微物", "煙塵", "夜族", "渾頓", "大腸"};
+    sprintf(cuser.username, "拉帕地底的%s", nick[ap_start % 9]);
   }
 #endif	/* GUEST_NICK */
 
@@ -506,9 +534,8 @@ utmp_setup(mode)
   if (!cuser.userlevel)		/* guest */
   {
     /* itoc.010910: GUEST_NICK 和 GUEST_WHERE 的亂數模數避免一樣 */
-    char from[16][9] = {"風亭九思", "青埔朝陽", "率意通衢", "南台遠眺", "康莊迎曦", "碧草如茵", "緣慧潤生", "西庭笑語",
-			"玉樹向榮", "綠掩重樓", "松林立翠", "竹湖晨風", "竹園映亭", "曲道夾蔭", "荷塘月色", "思園春曉"};
-    strcpy(utmp.from, from[ap_start % 16]);
+    char from[3][9] = {"深淵國度", "深淵宮殿", "深淵謎境"};
+    strcpy(utmp.from, from[ap_start % 3]);
   }
   else
 #  endif	/* GUEST_WHERE */
@@ -520,7 +547,7 @@ utmp_setup(mode)
    * 如果把 140.112. 寫入 etc/host 中，就不用把 ntu.edu.tw *
    * 重覆寫入 etc/fqdn 裡了                                */
 
-    char name[40];
+    char name[48];
 
     /* 先比對 FQDN */
     str_lower(name, fromhost);	/* itoc.011011: 大小寫均可，etc/fqdn 裡面都要寫小寫 */
@@ -535,7 +562,7 @@ utmp_setup(mode)
 
 #else
   str_ncpy(utmp.from, fromhost, sizeof(utmp.from));
-#endif	/* HAVE_WHERE */      
+#endif	/* HAVE_WHERE */
   
   /* Thor: 告訴User已經滿了放不下... */
   if (!utmp_new(&utmp))
@@ -562,8 +589,12 @@ login_user(content)
   char passbuf[PSWDLEN + 1];
 #endif
 
+  /*
   move(b_lines, 0);
   outs("   ※ 參觀帳號：\033[1;32m" STR_GUEST "\033[m  申請新帳號：\033[1;31m" STR_NEW "\033[m");
+  */
+
+  //prints("【\033[1;33;46m " BBSNAME " \033[m】⊙ 線上人數 %d 人", ushm->count);
 
   attempts = 0;
   multi = 0;
@@ -575,7 +606,13 @@ login_user(content)
       login_abort("\n再見 ...");
     }
 
+    /* 040213.Lacool: 修改登入顯示介面 */
+	vget(b_lines - 3, 0, "        以[guest]參觀，以[new]註冊，或輸入[您的帳號]："
+	, uid, IDLEN + 1, DOECHO);
+
+	/* Code old
     vget(b_lines - 2, 0, "   [您的帳號] ", uid, IDLEN + 1, DOECHO);
+	*/
 
     if (!str_cmp(uid, STR_NEW))
     {
@@ -605,22 +642,22 @@ login_user(content)
 	{
 	  FILE *fp;
 	  char parentid[IDLEN + 1], buf[80];
-	  time_t now;
+
+	  strcpy(parentid, cuser.userid);
+
+	  acct_apply();
+	  logattempt(' ', content);
 
 	  /* itoc.010820: 記錄保人於保證人及被保人 */
-	  strcpy(parentid, cuser.userid);
-	  acct_apply();
-	  time(&now);
-
 	  /* itoc.010820.註解: 把對方 log 在行首，在 reaper 時可以方便砍 tree */
-	  sprintf(buf, "%s 於 %s 介紹此人(%s)加入本站\n", parentid, Btime(&now), cuser.userid);
+	  sprintf(buf, "%s 於 %s 介紹此人(%s)加入本站\n", parentid, Btime(&ap_start), cuser.userid);
 	  usr_fpath(fpath, cuser.userid, "guarantor");
 	  if (fp = fopen(fpath, "a"))
 	  {
 	    fputs(buf, fp);
 	    fclose(fp);
 	  }
-	  sprintf(buf, "%s 於 %s 被此人(%s)介紹加入本站\n", cuser.userid, Btime(&now), parentid);
+	  sprintf(buf, "%s 於 %s 被此人(%s)介紹加入本站\n", cuser.userid, Btime(&ap_start), parentid);
 	  usr_fpath(fpath, parentid, "guarantor");
 	  if (fp = fopen(fpath, "a"))
 	  {
@@ -632,7 +669,8 @@ login_user(content)
 	}
       }
 #  else
-      acct_apply(); /* Thor.980917: 註解: setup cuser ok */
+      acct_apply(); /* Thor.980917.註解: cuser setup ok */
+      logattempt(' ', content);
       break;
 #  endif
 #else
@@ -646,15 +684,28 @@ login_user(content)
     }
     else if (str_cmp(uid, STR_GUEST))	/* 一般使用者 */
     {
-      if (!vget(b_lines - 2, 40, "[您的密碼] ", passbuf, PSWDLEN + 1, NOECHO))
+      /* 040213.Lacool:在輸入完 ID 時先載入 .ACCT 判斷 ID 輸入有無錯誤 */
+      if (acct_load(&cuser, uid) < 0)
+      {
+        vmsg(err_uid);
+        continue;
+      }
+
+      /* 040213.Lacool:修改登入密碼的介面 */
+      if (!vget(b_lines - 2, 42, "[您的密碼]：", passbuf, PSWDLEN + 1, NOECHO))
+      /* Code old
+	  if (!vget(b_lines - 2, 40, "[您的密碼] ", passbuf, PSWDLEN + 1, NOECHO))
+	  */
 	continue;	/* 不打密碼則取消登入 */
 
-      /* itoc.040110: 在輸入完 ID 及密碼，才載入 .ACCT */
+    /*
+      ///* itoc.040110: 在輸入完 ID 及密碼，才載入 .ACCT
       if (acct_load(&cuser, uid) < 0)
       {
 	vmsg(err_uid);
 	continue;
       }
+    */
 
       if (chkpasswd(cuser.passwd, passbuf))
       {
@@ -719,7 +770,7 @@ login_user(content)
 	    if ((kill(pid, SIGTERM) == -1) && (errno == ESRCH))
 	      utmp_free(ui);
 	    else
-	      sleep(3);			/* 被踢的人這時候正在自我了斷 */ 
+	      sleep(3);			/* 被踢的人這時候正在自我了斷 */
 	    blog("MULTI", cuser.userid);
 	  }
 
@@ -740,7 +791,7 @@ login_user(content)
       logattempt(' ', content);
       cuser.userlevel = 0;	/* Thor.981207: 怕人亂玩, 強制寫回cuser.userlevel */
       cuser.ufo = UFO_DEFAULT_GUEST;
-      break;	/* Thor.980917: 註解: cuser ok! */
+      break;	/* Thor.980917.註解: cuser setup ok */
     }
   }
 
@@ -936,7 +987,7 @@ tn_login()
   /* --------------------------------------------------- */
 
   bbstate = STAT_STARTED;	/* 進入系統以後才可以回水球 */
-  utmp_setup(M_LOGIN);		/* Thor.980917: 註解: cutmp, cutmp-> setup ok */
+  utmp_setup(M_LOGIN);		/* Thor.980917.註解: cutmp, cutmp-> setup ok */
   total_user = ushm->count;	/* itoc.011027: 未進使用者名單前，啟始化 total_user */
 
   mbox_main();
@@ -946,9 +997,21 @@ tn_login()
   mode_lastchange = ap_start;
 #endif
 
+  /* 041122.Lacool:進站歡迎畫面 */
+  film_out(FILM_WELCOME, 0);
+
   if (cuser.userlevel)		/* not guest */
   {
     /* ------------------------------------------------- */
+    /* 秀出上次上站資訊					 */
+    /* ------------------------------------------------- */
+
+    move(b_lines - 2, 0);
+    prints("★ 歡迎您第 \033[1;33m%d\033[m 度拜訪本站，上次您來自 \033[1;33m%s\033[m\n"
+      "★ 我記得那天是 \033[1;33m%s\033[m。", 
+      cuser.numlogins, cuser.lasthost, Btime(&cuser.lastlogin));
+
+	/* ------------------------------------------------- */
     /* 核對 user level 並將 .ACCT 寫回			 */
     /* ------------------------------------------------- */
 
@@ -959,6 +1022,7 @@ tn_login()
     str_ncpy(cuser.lasthost, fromhost, sizeof(cuser.lasthost));
 
     login_level();
+		vmsg(NULL);
 
     /* ------------------------------------------------- */
     /* 設定 status					 */
@@ -1056,12 +1120,19 @@ tn_main()
 
   time(&ap_start);
 
+  /* wake.080602: 關閉登入時上方顯示資訊 */
+  /*
   prints("%s ⊙ " SCHOOLNAME " ⊙ " MYIPADDR "\n"
     "歡迎光臨【\033[1;33;46m %s \033[m】目前線上人數 [%d] 人",
     str_host, str_site, ushm->count);
+  */
 
-  film_out((ap_start % 3) + FILM_OPENING0, 3);	/* 亂數顯示開頭畫面 */
+  /* wake.080603: 將畫面輸出高度從 3 -> 0 */
+  film_out((ap_start % 3) + FILM_OPENING0, 0);	/* 亂數顯示開頭畫面 */
   
+  /* wake.080603: 多輸出一個兩列的新聞檔案 FILM_ANNOUNCE / @announce */
+  film_out(FILM_ANNOUNCE, b_lines - 1);
+
   currpid = getpid();
 
   tn_signals();	/* Thor.980806: 放於 tn_login前, 以便 call in不會被踢 */
@@ -1529,9 +1600,11 @@ main(argc, argv)
 
     tn_addr = sin.sin_addr.s_addr;
     dns_name((char *) &sin.sin_addr, fromhost);
+    /* str_ncpy(fromhost, (char *)inet_ntoa(sin.sin_addr), sizeof(fromhost)); */
 
     telnet_init();
     term_init();
     tn_main();
   }
 }
+

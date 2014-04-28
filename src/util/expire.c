@@ -29,8 +29,8 @@
 #endif
 
 
-#define	DEF_DAYS	365		/* 預設清除超過 365 天的文章 */
-#define	DEF_MAXP	5000		/* 預設清除超過 5000 篇的文章 */
+#define	DEF_DAYS	9999		/* 預設清除超過 365 天的文章 */
+#define	DEF_MAXP	9999		/* 預設清除超過 5000 篇的文章 */
 #define	DEF_MINP	500		/* 預設低於 500 篇的看板不砍文章 */
 
 

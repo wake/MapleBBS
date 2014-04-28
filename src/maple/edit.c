@@ -38,6 +38,11 @@ static int ve_col;
 static int ve_mode;		/* operation mode */
 
 
+#ifdef HAVE_MULTI_BYTE
+static int zhc;			/* 是否有 UFO_ZHC */
+#endif
+
+
 #ifdef HAVE_ANONYMOUS
 char anonymousid[IDLEN + 1];	/* itoc.010717: 自定匿名 ID */
 #endif
@@ -88,6 +93,10 @@ ve_position(cur, top)
   row = cur->len;
   if (ve_col > row)
     ve_col = row;
+#ifdef HAVE_MULTI_BYTE
+  else if (zhc && ve_col < row && IS_ZHC_LO(cur->data, ve_col))	/* hightman.060504: 漢字整字調節 */
+    ve_col++;
+#endif
 
   row = 0;
   while (cur != top)
@@ -1427,24 +1436,118 @@ ve_banner(fp, modify)		/* 加上來源等訊息 */
   FILE *fp;
   int modify;			/* 1:修改 0:原文 */
 {
+
+  /* 041112.小翊修改:亂數取 banner 中的符號，因為擔心人多時會造成運算過多，
+                     故以 RANDOM_BANNER 此 define 來決定是否運用 */
+#ifdef RANDOM_BANNER
+  int spc = (time(0) % 12);
+  char *symbol[12] = {"Ξ", "￡", "￥", "∮", "Γ", "Θ", "Λ", "Π", "Σ", "Φ", "Ψ", "Ω"};
+#endif
+
+  /* 041112.小翊修改: banner 樣式修改，並獨立變數 */
+  char *bbsbanner[5] = {"\033[;1m █\033[m  \033[1;31;41m",
+
+                        "\033[;1m ◢▔◣  █▔◣ ◢▔◣ \033[30m╒ \033[mA\033[1mut\033[30mho\033[m"
+                        "r: \033[1;37m",
+
+                        "\033[1m \033[;31;47mＬ\033[m     \033[;33;47mａ\033[m██  \033[;31;47m"
+                        "Ｐ\033[m█◤ \033[;33;47mａ\033[m██\033[m \033[1;30m╘ \033[mF\033[1m"
+                        "r\033[30mo\033[;41m\033[mm:\033[1;37m ",
+
+                        "\033[1;30m █▁◤ █  █  █     █  █          \033[;31m╦\033[1;37;41m"
+                        "拉帕之結\033[;31;40m╦\033[31m‧\33[1;31mL\033[;31ma\033[1mP\033[;31ma"
+                        "\033[1m.\033[;31mtwbbs\033[1m.\033[;31morg\033[m",
+
+                        "\033[1;37m▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔\033[1;30m"
+                        "▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔\033[m"};
+
   /* itoc: 建議 banner 不要超過三行，過長的站簽可能會造成某些使用者的反感 */
 
   if (!modify)
-  {
-    fprintf(fp, EDIT_BANNER, 
-#ifdef HAVE_ANONYMOUS
-      (curredit & EDIT_ANONYMOUS) ? STR_ANONYMOUS : 
+  { /* 2004/04/23 小翊修改：banner 樣式 */
+
+    fprintf(fp, "\n--\n"
+
+    /*
+     " \033[m Or\033[1mig\033[30min\033[m: \033[33m"BBSNAME"〈"MYALIASENAME"〉\033[m\n"
+     " \033[m A\033[1mut\033[30mho\033[mr: \033[32m%s \033[m從 \033[32m%s \033[m發表\033[m\n",
+    */
+
+     "%s%s%s%s%s\n"
+     "%s%.40s%s\n"
+     "%s\n%s\n",
+
+     /* 041112.小翊修改:亂數取 banner 符號 */
+#ifdef RANDOM_BANNER
+     bbsbanner[0], symbol[spc], bbsbanner[1],
+#else
+     bbsbanner[0], "￡", bbsbanner[1],
 #endif
-      cuser.userid, 
+
 #ifdef HAVE_ANONYMOUS
-      (curredit & EDIT_ANONYMOUS) ? "雲與山的彼端 ^O^||" : 
+      (curredit & EDIT_ANONYMOUS) ? STR_ANONYMOUS :
+#endif
+      cuser.userid,
+      "\033[m",
+      bbsbanner[2],
+#ifdef HAVE_ANONYMOUS
+      (curredit & EDIT_ANONYMOUS) ? "雲與山的彼端 ^O^||" :
+#endif
+      fromhost,
+      "\033[m",
+      bbsbanner[3], bbsbanner[4]);
+  }
+  else
+  {
+    fprintf(fp,
+
+      /*
+      " \033[1;43m╰\033[46m╖\033[m \033[1mMo\033[30mdi\033[mfy: \033[1;35m%s\033[m\n", Now());
+      */
+
+      " \033[1;31;41m%s\033[;1m Mo\033[30mdi\033[mfy: \033[1m%s "
+      " \033[1mFr\033[30mo\033[mm: \033[1m%.35s\033[m\n",
+
+        /* 041112.小翊修改:亂數取 banner 符號 */
+#ifdef RANDOM_BANNER
+        symbol[spc],
+#else
+        "Ξ",
+#endif
+
+        Now(),
+
+#ifdef HAVE_ANONYMOUS
+        (curredit & EDIT_ANONYMOUS) ? "雲與山的彼端 ^O^||" :
+#endif
+        fromhost);
+
+  }
+
+/* 041122.Lacool:原有的完整內容 */
+#if 0
+        /* itoc: 建議 banner 不要超過三行，過長的站簽可能會造成某些使用者的反感 */
+
+  if (!modify)
+  {
+    fprintf(fp, "\n--\n"
+      " \033[1;43m◤\033[46m◥\033[m Or\033[1mig\033[30min\033[m: \033[41m "SCHOOLNAME"˙"BBSNAME" \033[36;47m "MYHOSTNAME" \033[m\n"
+      " \033[1;44m◣\033[41m◢\033[m A\033[1mut\033[30mho\033[mr: \033[1;33m%s \033[30m從 \033[31m%s \033[30m發表\033[m\n",
+#ifdef HAVE_ANONYMOUS
+      (curredit & EDIT_ANONYMOUS) ? STR_ANONYMOUS :
+#endif
+      cuser.userid,
+#ifdef HAVE_ANONYMOUS
+      (curredit & EDIT_ANONYMOUS) ? "雲與山的彼端 ^O^||" :
 #endif
       fromhost);
   }
   else
   {
-    fprintf(fp, MODIFY_BANNER, cuser.userid, Now());
+    fprintf(fp,
+      " \033[1;45m▂\033[42m█\033[m \033[1mMo\033[30mdi\033[mfy: \033[1;35m%s\033[m\n", Now());
   }
+#endif
 }
 
 
@@ -1698,6 +1801,7 @@ ve_subject(row, topic, dft)
 /*  2 => 引文、加簽名檔，不加上檔頭，用在寄站外信	 */
 /* ----------------------------------------------------- */
 /* 若 ve_op 是 1 或 2 時，進入 vedit 前還得指定 curredit */
+/* 和 quote_file					 */
 /* ----------------------------------------------------- */
 
 int		/* -1:取消編輯 0:完成編輯 */
@@ -1755,6 +1859,10 @@ vedit(fpath, ve_op)
   ve_lno = 1;
   ve_mode = VE_INSERT | VE_REDRAW | VE_FOOTER;
 
+#ifdef HAVE_MULTI_BYTE
+  zhc = (cuser.ufo & UFO_ZHC);
+#endif
+
   /* --------------------------------------------------- */
   /* 主迴圈：螢幕顯示、鍵盤處理、檔案處理		 */
   /* --------------------------------------------------- */
@@ -1767,7 +1875,7 @@ vedit(fpath, ve_op)
     mode = ve_mode;
     col = ve_col;
     /* itoc.031123.註解: 如果超過 SCR_WIDTH，那麼頁面往右翻，並保留左頁的最後 4 字 */
-    cc = (col < SCR_WIDTH) ? 0 : (col / (SCR_WIDTH - 4)) * (SCR_WIDTH - 4);
+    cc = (col <= SCR_WIDTH) ? 0 : (col / (SCR_WIDTH - 4)) * (SCR_WIDTH - 4);
     if (cc != margin)
     {
       mode |= VE_REDRAW;
@@ -1900,7 +2008,13 @@ ve_key:
 
 	if (col)
 	{
-	  delete_char(vln, ve_col = --col);
+	  delete_char(vln, --col);
+#ifdef HAVE_MULTI_BYTE
+	  /* hightman.060504: 判斷現在刪除的位置是否為漢字的後半段，若是刪二字元 */
+	  if (zhc && col && IS_ZHC_LO(vln->data, col))
+	    delete_char(vln, --col);
+#endif
+	  ve_col = col;
 	  continue;
 	}
 
@@ -1931,6 +2045,12 @@ ve_key:
 	{
 	  if (cc == 0)
 	    goto ve_key;
+#ifdef HAVE_MULTI_BYTE
+	  /* hightman.060504: 判斷現在刪除的位置是否為漢字的前半段，若是刪二字元 */
+	  /* 注意原有的雙色字刪除後可能出問題，暫時不作另行處理 */
+	  if (zhc && col < cc - 1 && IS_ZHC_HI(vln->data[col]))
+	    delete_char(vln, col);
+#endif
 	  delete_char(vln, col);
 	  if (mode & VE_ANSI)	/* Thor: 雖然增加 load, 不過edit 時會比較好看 */
 	    ve_col = ansi2n(n2ansi(col, vln), vln);
@@ -1942,6 +2062,11 @@ ve_key:
 	if (col)
 	{
 	  ve_col = (mode & VE_ANSI) ? ansi2n(pos - 1, vln) : col - 1;
+#ifdef HAVE_MULTI_BYTE
+	  /* hightman.060504: 左移時碰到漢字移雙格 */
+	  if (zhc && ve_col && IS_ZHC_LO(vln->data, ve_col))
+	    ve_col--;
+#endif
 	  continue;
 	}
 
@@ -1956,9 +2081,14 @@ ve_key:
 
       case KEY_RIGHT:
 
-	if (vln->len != col)
+	if (col < vln->len)
 	{
 	  ve_col = (mode & VE_ANSI) ? ansi2n(pos + 1, vln) : col + 1;
+#ifdef HAVE_MULTI_BYTE
+	  /* hightman.060504: 右移時碰到漢字移雙格 */
+	  if (zhc && ve_col < vln->len && IS_ZHC_HI(vln->data[ve_col - 1]))
+	    ve_col++;
+#endif
 	  continue;
 	}
 
@@ -2002,6 +2132,11 @@ ve_key:
 	    ve_col = cc;
 	}
 	vx_cur = tmp;
+#ifdef HAVE_MULTI_BYTE
+	/* hightman.060504: 漢字整字調節 */
+	if (zhc && ve_col < tmp->len && IS_ZHC_LO(tmp->data, ve_col))
+	  ve_col++;
+#endif
 	break;
 
       case KEY_DOWN:
@@ -2023,6 +2158,11 @@ ve_key:
 	    ve_col = cc;
 	}
 	vx_cur = tmp;
+#ifdef HAVE_MULTI_BYTE
+	/* hightman.060504: 漢字整字調節 */
+	if (zhc && ve_col < tmp->len && IS_ZHC_LO(tmp->data, ve_col))
+	  ve_col++;
+#endif
 	break;
 
       case KEY_PGUP:

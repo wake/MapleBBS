@@ -19,16 +19,13 @@
 extern UCACHE *ushm;
 
 
-#ifdef EVERY_Z
-extern int vio_fd;		/* Thor.980725: 為talk, chat可用^z作準備 */
-extern int holdon_fd;
-#endif
-
-
 typedef struct
 {
   int curcol, curln;
   int sline, eline;
+#ifdef HAVE_MULTI_BYTE
+  int zhc;
+#endif
 }      talk_win;
 
 
@@ -290,7 +287,7 @@ loginNotify()
 	move(row, col);
 	outs(benz->userid);
 	col += IDLEN + 1;
-	if (col > b_cols - IDLEN - 1)	/* 總共可以放 b_cols / (IDLEN + 1) 欄 */
+	if (col > b_cols + 1 - IDLEN - 1)	/* 總共可以放 (b_cols + 1) / (IDLEN + 1) 欄 */
 	{
 	  row++;
 	  col = 0;
@@ -340,15 +337,49 @@ talk_save()
 
 
 static char page_requestor[40];
-static uschar talk_pic[T_LINES][SCR_WIDTH + 1];
-static uschar talk_len[T_LINES];
+#ifdef HAVE_MULTI_BYTE
+static int page_requestor_zhc;
+#endif
+
+/* 每列可以輸入的字數為 SCR_WIDTH */
+#ifdef HAVE_MULTI_BYTE
+static uschar talk_pic[T_LINES][SCR_WIDTH + 1];	/* 刪除列尾字時會用到後一碼的空白，所以要多一碼 */
+#else
+static uschar talk_pic[T_LINES][SCR_WIDTH + 2];	/* 刪除列尾中文字時會用到後二碼的空白，所以要多二碼 */
+#endif
+static int talk_len[T_LINES];			/* 每列目前已輸入多少字 */
 
 
 static void
-talk_outc(ch)
-  int ch;
+talk_clearline(ln, col)
+  int ln, col;
 {
-  outc(ch == '\0' ? ' ' : ch);	/* 如果是 '\0' 要填空白 */
+  int i, len;
+
+  len = talk_len[ln];
+  for (i = col; i < len; i++)
+    talk_pic[ln][i] = ' ';
+
+  talk_len[ln] = col;
+}
+
+
+static void
+talk_outs(str, len)
+  uschar *str;
+  int len;
+{
+  int ch;
+  uschar *end;
+
+  /* 和一般的 outs() 是相同，只是限制印 len 個字 */
+  end = str + len;
+  while (ch = *str)
+  {
+    outc(ch);
+    if (++str >= end)
+      break;
+  }
 }
 
 
@@ -356,35 +387,34 @@ static void
 talk_nextline(twin)
   talk_win *twin;
 {
-  int curln, max, i;
+  int curln, max, len, i;
 
   curln = twin->curln;
   if (curln != twin->eline)
   {
     twin->curln = ++curln;
   }
-  else	/* 已經是最後一行，要向上捲動 */
+  else	/* 已經是最後一列，要向上捲動 */
   {
     max = twin->eline;
     for (curln = twin->sline; curln < max; curln++)
     {
-      move(curln, 0);
-      clrtoeol();
-
-      for (i = 0; i < SCR_WIDTH; i++)
-	talk_outc(talk_pic[curln][i] = talk_pic[curln + 1][i]);
+      len = BMAX(talk_len[curln], talk_len[curln + 1]);
+      for (i = 0; i < len; i++)
+        talk_pic[curln][i] = talk_pic[curln + 1][i];
       talk_len[curln] = talk_len[curln + 1];
+      move(curln, 0);
+      talk_outs(talk_pic[curln], talk_len[curln]);
+      clrtoeol();
     }
   }
+
+  /* 新的一列 */
+  talk_clearline(curln, 0);
 
   twin->curcol = 0;
   move(curln, 0);
   clrtoeol();
-
-  max = talk_len[curln];
-  for (i = 0; i < max; i++)
-    talk_pic[curln][i] = '\0';
-  talk_len[curln] = 0;
 }
 
 
@@ -401,32 +431,33 @@ talk_char(twin, ch)
 
   if (isprint2(ch))
   {
-    if (len >= SCR_WIDTH - 1)	/* Talk 的字數要比 SCR_WIDTH 少一字，此時游標要恰好在 (x, SCR_WIDTH) */
+    if (col >= SCR_WIDTH)	/* 若已經打到列尾，先換列 */
     {
       talk_nextline(twin);
-      col = 0;
+      col = twin->curcol;
       ln = twin->curln;
-      len = 0;
+      len = talk_len[ln];
     }
 
+    move(ln, col);
     if (col >= len)
     {
-      move(ln, col);
-      outc(talk_pic[ln][col] = ch);
+      talk_pic[ln][col] = ch;
+      outc(ch);
       twin->curcol = ++col;
       talk_len[ln] = col;
     }
     else		/* 要 insert */
     {
-      for (i = len; i > col; i--)
-      {
-	move(ln, i);
-	talk_outc(talk_pic[ln][i] = talk_pic[ln][i - 1]);
-      }
-      move(ln, col);
-      outc(talk_pic[ln][col] = ch);	/* ch 一定不會是 '\0' */
+      for (i = SCR_WIDTH - 1; i > col; i--)
+	talk_pic[ln][i] = talk_pic[ln][i - 1];
+      talk_pic[ln][col] = ch;
+      if (len < SCR_WIDTH)
+	len++;
+      talk_len[ln] = len;
+      talk_outs(talk_pic[ln] + col, len - col);
       twin->curcol = ++col;
-      talk_len[ln] = ++len;
+      move(ln, col);
     }
   }
   else
@@ -448,32 +479,71 @@ talk_char(twin, ch)
 	}
 	else
 	{
-	  twin->curcol = --col;
-	  talk_len[ln] = --len;
-	  for (i = col; i < len; i++)
+	  col--;
+#ifdef HAVE_MULTI_BYTE
+	  /* hightman.060504: 判斷現在刪除的位置是否為漢字的後半段，若是刪二字元 */
+	  if (twin->zhc && col && IS_ZHC_LO(talk_pic[ln], col))
 	  {
-	    move(ln, i);
-	    talk_outc(talk_pic[ln][i] = talk_pic[ln][i + 1]);
+	    col--;
+	    ch = 2;
 	  }
-	  move(ln, len);
-	  talk_outc(talk_pic[ln][len] = '\0');
+	  else
+#endif
+	    ch = 1;
+	  for (i = col; i < SCR_WIDTH; i++)
+	    talk_pic[ln][i] = talk_pic[ln][i + ch];
+	  move(ln, col);
+	  talk_outs(talk_pic[ln] + col, len - col);
+	  twin->curcol = col;
+	  talk_len[ln] = len - ch;
 	  move(ln, col);
 	}
+      }
+      break;
+
+    case Ctrl('D'):		/* KEY_DEL */
+      if (col < len)
+      {
+#ifdef HAVE_MULTI_BYTE
+	/* hightman.060504: 判斷現在刪除的位置是否為漢字的前半段，若是刪二字元 */
+	if (twin->zhc && col < len - 1 && IS_ZHC_HI(talk_pic[ln][col]))
+	  ch = 2;
+	else
+#endif
+	  ch = 1;
+	for (i = col; i < SCR_WIDTH; i++)
+	  talk_pic[ln][i] = talk_pic[ln][i + ch];
+	move(ln, col);
+	talk_outs(talk_pic[ln] + col, len - col);
+	talk_len[ln] = len - ch;
+	move(ln, col);
       }
       break;
 
     case Ctrl('B'):		/* KEY_LEFT */
       if (col > 0)
       {
-	twin->curcol = --col;
+	col--;
+#ifdef HAVE_MULTI_BYTE
+	/* hightman.060504: 左移時碰到漢字移雙格 */
+	if (twin->zhc && col && IS_ZHC_LO(talk_pic[ln], col))
+	  col--;
+#endif
+	twin->curcol = col;
 	move(ln, col);
       }
       break;
 
     case Ctrl('F'):		/* KEY_RIGHT */
-      if (col < SCR_WIDTH - 1)
+      if (col < SCR_WIDTH)
       {
-	twin->curcol = ++col;
+	col++;
+#ifdef HAVE_MULTI_BYTE
+	/* hightman.060504: 右移時碰到漢字移雙格 */
+	if (twin->zhc && col < SCR_WIDTH && IS_ZHC_HI(talk_pic[ln][col - 1]))
+	  col++;
+#endif
+	twin->curcol = col;
 	move(ln, col);
       }
       break;
@@ -482,6 +552,11 @@ talk_char(twin, ch)
       if (ln > twin->sline)
       {
 	twin->curln = --ln;
+#ifdef HAVE_MULTI_BYTE
+	/* hightman.060504: 漢字整字調節 */
+	if (twin->zhc && col < SCR_WIDTH && IS_ZHC_LO(talk_pic[ln], col))
+	  col++;
+#endif
 	move(ln, col);
       }
       break;
@@ -490,6 +565,11 @@ talk_char(twin, ch)
       if (ln < twin->eline)
       {
 	twin->curln = ++ln;
+#ifdef HAVE_MULTI_BYTE
+	/* hightman.060504: 漢字整字調節 */
+	if (twin->zhc && col < SCR_WIDTH && IS_ZHC_LO(talk_pic[ln], col))
+	  col++;
+#endif
 	move(ln, col);
       }
       break;
@@ -505,18 +585,14 @@ talk_char(twin, ch)
       break;
     
     case Ctrl('Y'):		/* clear this line */
-      for (i = 0; i < len; i++)
-	talk_pic[ln][i] = '\0';
-      talk_len[ln] = 0;
+      talk_clearline(ln, 0);
       twin->curcol = 0;
       move(ln, 0);
       clrtoeol();
       break;
 
     case Ctrl('K'):		/* clear to end of line */
-      for (i = col; i < len; i++)
-	talk_pic[ln][i] = '\0';
-      talk_len[ln] = col;
+      talk_clearline(ln, col);
       move(ln, col);
       clrtoeol();
       break;
@@ -561,7 +637,7 @@ talk_speak(fd)
   所以我們必須要先把自己打的字與對方打的字分開來.
 
   於是就先建兩個 spool, 分別將 mywin/itswin recv 的 char 往各自的 spool 
-  裡丟, 目前設 spool 剛好是一行的大小, 所以只要是 spool 滿了, 或是碰到換
+  裡丟, 目前設 spool 剛好是一列的大小, 所以只要是 spool 滿了, 或是碰到換
   行字元, 就把 spool 裡的資料寫回 log, 然後清掉 spool, 如此繼續 :)
 #endif
 
@@ -596,8 +672,14 @@ talk_speak(fd)
 
   i = b_lines >> 1;
   mywin.eline = i - 1;
+#ifdef HAVE_MULTI_BYTE
+  mywin.zhc = cuser.ufo & UFO_ZHC;
+#endif
   itswin.curln = itswin.sline = i + 1;
   itswin.eline = b_lines - 1;
+#ifdef HAVE_MULTI_BYTE
+  itswin.zhc = page_requestor_zhc;
+#endif
 
   clear();
   move(i, 0);
@@ -606,9 +688,10 @@ talk_speak(fd)
   outf(FOOTER_TALK);
   move(0, 0);
 
-  /* 清空 talk_pic[][] talk_len[] */
-  memset(&talk_pic, 0, sizeof(talk_pic));
-  memset(&talk_len, 0, sizeof(talk_len));
+  /* talk_pic 記錄整個畫面的文字，初始值是空白 */
+  memset(talk_pic, ' ', sizeof(talk_pic));
+  /* talk_len 記錄整個畫面各列已經用了多少字 */
+  memset(talk_len, 0, sizeof(talk_len));
 
 #ifdef LOG_TALK				/* lkchu.981201: 聊天記錄 */
   usr_fpath(buf, cuser.userid, FN_TALK_LOG);
@@ -635,13 +718,11 @@ talk_speak(fd)
       /* Thor.980731: 暫存 mateid, 因為出去時可能會用掉 mateid */
       strcpy(buf, cutmp->mateid);
 
-      holdon_fd = vio_fd;	/* Thor.980727: 暫存 vio_fd */
-      vio_fd = 0;
+      vio_save();	/* Thor.980727: 暫存 vio_fd */
       vs_save(slt);
       every_Z(0);
       vs_restore(slt);
-      vio_fd = holdon_fd;	/* Thor.980727: 還原 vio_fd */
-      holdon_fd = 0;
+      vio_restore();	/* Thor.980727: 還原 vio_fd */
 
       /* Thor.980731: 還原 mateid, 因為出去時可能會用掉 mateid */
       strcpy(cutmp->mateid, buf);
@@ -674,7 +755,7 @@ talk_speak(fd)
 	switch (data[i])
 	{
 	case '\n':
-	  /* lkchu.981201: 有換行就把 itswords 印出清掉 */
+	  /* lkchu.981201: 有換列就把 itswords 印出清掉 */
 	  if (itswords[0] != '\0')
   	  {
   	    fprintf(fp, "\033[32m%s：%s\033[m\n", itsuserid, itswords);
@@ -731,6 +812,10 @@ talk_speak(fd)
     {
       switch (ch)
       {
+      case KEY_DEL:
+	ch = Ctrl('D');
+	break;
+
       case KEY_LEFT:
 	ch = Ctrl('B');
 	break;
@@ -866,7 +951,7 @@ talk_page(up)
 
 #ifdef EVERY_Z
   /* Thor.980725: 為 talk & chat 可用 ^z 作準備 */
-  if (holdon_fd)
+  if (vio_holdon())
   {
     vmsg("您講話講一半還沒講完耶");
     return 0;
@@ -968,6 +1053,9 @@ talk_page(up)
   if (ans == 'y')
   {
     sprintf(page_requestor, "%s (%s)", up->userid, up->username);
+#ifdef HAVE_MULTI_BYTE
+    page_requestor_zhc = up->ufo & UFO_ZHC;
+#endif
 
     /* Thor.980814.注意: 在此有一個雞同鴨講的可能情況, 如果 A 先 page B, 但在 B 回應前卻馬上離開, 換 page C,
 	C 尚未回應前, 如果 B 回應了, B 就會被 accept, 而不是 C.
@@ -1239,7 +1327,7 @@ talk_rqst()
 #ifdef EVERY_Z
   /* Thor.980725: 為 talk & chat 可用 ^z 作準備 */
 
-  if (holdon_fd)
+  if (vio_holdon())
   {
     sprintf(buf, "%s 想和您聊，不過您只有一張嘴", page_requestor);
     vmsg(buf);
@@ -1322,6 +1410,10 @@ over_for:
     if (ans == 'y')
     {
       strcpy(cutmp->mateid, up->userid);
+#ifdef HAVE_MULTI_BYTE
+      page_requestor_zhc = up->ufo & UFO_ZHC;
+#endif
+
       talk_speak(sock);
     }
   }

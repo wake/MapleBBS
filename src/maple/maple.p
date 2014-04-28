@@ -16,7 +16,11 @@ void brd_title(int bno);
 void x_file(int mode, char *xlist[], char *flist[]);
 int m_trace(void);
 
+/* mysql.c */
+int sql_account_create(void);
+
 /* bbsd.c */
+void alog(char *mode, char *msg);
 void blog(char *mode, char *msg);
 void u_exit(char *mode);
 void abort_bbs(void);
@@ -44,9 +48,11 @@ void brh_save(void);
 void brd_force(void);
 void class_item(int num, int bno, int brdpost);
 int is_bm(char *list, char *userid);
+void mantime_add(int outbno, int inbno);
 int XoPost(int bno);
 int Select(void);
 int Class(void);
+int MFclass_browse(char *name);
 void board_main(void);
 int Boards(void);
 
@@ -80,13 +86,12 @@ int vedit(char *fpath, int ve_op);
 /* favorite.c */
 void mf_fpath(char *fpath, char *userid, char *fname);
 int MyFavorite(void);
-void XoMF(char *folder);
 void mf_main(void);
 
 /* gem.c */
 int gem_link(char *brdname);
 void brd2gem(BRD *brd, HDR *gem);
-void gem_buffer(char *dir, HDR *ghdr);
+void gem_buffer(char *dir, HDR *hdr, int (*fchk)());
 int gem_gather(XO *xo);
 void XoGem(char *folder, char *title, int level);
 void gem_main(void);
@@ -103,7 +108,7 @@ int m_verify(void);
 usint m_quota(void);
 usint m_query(char *userid);
 void m_biff(int userno);
-void mail_hold(char *fpath, char *rcpt, int hold);
+void mail_hold(char *fpath, char *rcpt, char *title, int hold);
 int mail_external(char *addr);
 int mail_send(char *rcpt);
 int my_send(char *userid);
@@ -148,6 +153,8 @@ int t_list(void);
 int cmpchrono(HDR *hdr);
 void btime_update(int bno);
 void cancel_post(HDR *hdr);
+int is_author(HDR *hdr);
+int chkrestrict(HDR *hdr);
 int do_reply(XO *xo, HDR *hdr);
 int tag_char(int chrono);
 void hdr_outs(HDR *hdr, int cc);
@@ -157,6 +164,7 @@ int post_cross(XO *xo);
 int post_forward(XO *xo);
 int post_write(XO *xo);
 int post_score(XO *xo);
+void post_history(XO *xo, HDR *hdr);
 
 /* talk.c */
 char *bmode(UTMP *up, int simple);
@@ -189,6 +197,7 @@ int u_log(void);
 int u_xfile(void);
 
 /* visio.c */
+int is_zhc_low(char *str, int pos);
 void prints(char *fmt, ...);
 void bell(void);
 void move(int x, int y);
@@ -212,6 +221,9 @@ void vs_restore(screenline *slp);
 int vmsg(char *msg);
 void zmsg(char *msg);
 void vs_bar(char *title);
+void vio_save(void);
+void vio_restore(void);
+int vio_holdon(void);
 void add_io(int fd, int timeout);
 int igetch(void);
 BRD *ask_board(char *board, int perm, char *msg);
@@ -259,3 +271,4 @@ int news_head(XO *xo);
 int news_init(XO *xo);
 int news_load(XO *xo);
 int XoNews(XO *xo);
+

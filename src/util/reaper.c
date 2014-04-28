@@ -460,15 +460,10 @@ reaper(fpath, lowid)
 
     if (!life)
     {
+      /* 清除的帳號放在 usr/@ */
       sprintf(buf, "usr/@/%s", lowid);
-
-      while (rename(fpath, buf))
-      {
-	extern int errno;
-
-	fprintf(flog, "rename %s ==> %s : %d\n", fpath, buf, errno);
-	sprintf(buf, "usr/@/%s.%d", lowid, ++life);
-      }
+      if (rename(fpath, buf) < 0)
+        f_rm(fpath);
 
       userno_free(userno);
       datemsg(buf, &acct.lastlogin);
@@ -583,9 +578,6 @@ main()
     due_forfun = start - DAY_FORFUN * 86400;
     due_occupy = start - DAY_OCCUPY * 86400;
   }
-
-  /* itoc.011124: kulu 不砍帳號: 所有人的 acct.lastlogin 都 >= 0 */
-  due_newusr = due_forfun = due_occupy = 0;
 
 #ifdef CHECK_LAZYBM
   due_lazybm = start - DAY_LAZYBM * 86400;

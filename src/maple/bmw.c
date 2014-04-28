@@ -612,7 +612,7 @@ bmw_rqst()
       rec_add(buf, mptr, sizeof(BMW));
 
       /* itoc.020126: 加入 FN_AMW */
-      fprintf(fp, BMW_FORMAT " %s\n", mptr->userid, mptr->msg, Btime(&(mptr->btime)));
+      fprintf(fp, BMW_FORMAT " %s\n", mptr->userid, mptr->msg, Btime(&mptr->btime));
 
       bmw_lslot[locus++] = *mptr;	/* structure copy */
     } while (++i < j);
@@ -945,6 +945,25 @@ bmw_save_user(xo)
 
 
 static int
+bmw_clear(xo)
+  XO *xo;
+{
+  if (vans("是否刪除所有水球紀錄(Y/N)？[N] ") == 'y')
+  {
+    char fpath[64];
+
+    usr_fpath(fpath, cuser.userid, fn_bmw);
+    unlink(fpath);
+    usr_fpath(fpath, cuser.userid, fn_amw);
+    unlink(fpath);
+    return XO_QUIT;
+  }
+
+  return XO_FOOT;
+}
+
+
+static int
 bmw_tag(xo)
   XO *xo;
 {
@@ -993,6 +1012,7 @@ KeyFunc bmw_cb[] =
   'u', bmw_save_user,
   't', bmw_tag,
   Ctrl('D'), bmw_prune,
+  'C', bmw_clear,
   
   'h', bmw_help
 };

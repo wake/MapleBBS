@@ -260,19 +260,24 @@ bsmtp(fpath, title, rcpt, method)
       method & MQ_JUSTIFY ? "BBS Register" : 
 #endif
       cuser.username, from, rcpt);
+
     /* itoc.030411: mail 輸出 RFC 2047 */
     output_rfc2047_qp(fw, "Subject: ", title, MYCHARSET, "\r\n");
+
+    fprintf(fw, "Date: %s\r\nMessage-Id: <%s@%s>\r\n", Atime(&stamp), msgid, str_host);
+
     /* itoc.030323: mail 輸出 RFC 2045 */
+    fprintf(fw, "Mime-Version: 1.0\r\n"
+      "Content-Type: %s; charset="MYCHARSET"\r\n"
+      "Content-Transfer-Encoding: %s\r\n",
+      method & MQ_ATTACH ? "application/x-compressed" : "text/plain",
+      method & MQ_ATTACH ? "base64" : "8bit");
+    if (method & MQ_ATTACH)
+      fprintf(fw, "Content-Disposition: attachment; filename=%s.tgz\r\n", cuser.userid);
+
     fprintf(fw, "X-Sender: %s (%s)\r\n"
-      "Date: %s\r\nMessage-Id: <%s@%s>\r\n"
-      "Mime-Version: 1.0\r\n"
-      "Content-Type: %s; charset=%s\r\n"
-      "Content-Transfer-Encoding: 8bit\r\n"
       "X-Disclaimer: [%s] 對本信內容恕不負責\r\n\r\n",
-      cuser.userid, cuser.username,
-      Atime(&stamp), msgid, str_host,
-      method & MQ_ATTACH ? "application/x-gzip" : "text/plain", MYCHARSET, 
-      str_site);
+      cuser.userid, cuser.username, str_site);
 
 #ifdef EMAIL_JUSTIFY
     if (method & MQ_JUSTIFY)	/* 身分認證信函 */
@@ -292,6 +297,8 @@ bsmtp(fpath, title, rcpt, method)
 
       str = buf;
       *str++ = '.';
+      if (method & MQ_ATTACH)	/* LHD.061222: 去掉開頭 begin 那行 */
+	fgets(str, sizeof(buf) - 3, fp);
       while (fgets(str, sizeof(buf) - 3, fp))
       {
 	if (ptr = strchr(str, '\n'))
@@ -416,7 +423,7 @@ do_forward(title, mode)
       gem_fpath(fpath, currboard, NULL);
     }
 
-    sprintf(cmd, "tar cfz - %s | uuencode %s.tgz > tmp/%s.tgz", fpath, userid, userid);
+    sprintf(cmd, "tar cfz - %s | uuencode -m %s.tgz > tmp/%s.tgz", fpath, userid, userid);
     system(cmd);
 
     sprintf(fpath, "tmp/%s.tgz", userid);
@@ -605,7 +612,7 @@ m_quota()
 
 	  hdr_fpath(fpath, folder, head);
 	  unlink(fpath);
-	  prune--;
+	  prune++;
 	  continue;
 	}
 
@@ -622,11 +629,11 @@ m_quota()
 	}
 
 	if (prune)
-	  head[prune] = head[0];
+	  memcpy(head - prune, head, sizeof(HDR));
 
       } while (++head < tail);
 
-      fsize += (prune * sizeof(HDR));
+      fsize -= (prune * sizeof(HDR));
       if ((fsize > 0) && (prune || (status & STATUS_MQUOTA)))
       {
 	lseek(fd, 0, SEEK_SET);
@@ -644,7 +651,7 @@ m_quota()
 
   close(fd);
 
-  if (fsize > limit)
+  if (fsize > limit * sizeof(HDR))
     status ^= STATUS_MAILOVER;
   else if (fsize < sizeof(HDR))
     unlink(folder);
@@ -712,19 +719,20 @@ m_biff(userno)
 
 
 void
-mail_hold(fpath, rcpt, hold)
+mail_hold(fpath, rcpt, title, hold)
   char *fpath;
   char *rcpt;
+  char *title;
   int hold;		/* -1:當寄信失敗時可以強迫保留 */
 {
-  char title[256];
-
-  if (hold < 0 || vans("是否自存底稿(Y/N)？[N] ") == 'y')
+  if (cuser.userlevel && (hold < 0 || vans("是否自存底稿(Y/N)？[N] ") == 'y'))
   {
-    sprintf(title, "<%s> %s", rcpt, ve_title);
-    title[TTLEN] = '\0';
+    char buf[256];
 
-    mail_self(fpath, "[備 忘 錄]", title, MAIL_READ | MAIL_NOREPLY);
+    sprintf(buf, "<%s> %s", rcpt, title);
+    buf[TTLEN] = '\0';
+
+    mail_self(fpath, "[備 忘 錄]", buf, MAIL_READ | MAIL_NOREPLY);
   }
 }
 
@@ -784,6 +792,7 @@ int		/* >=0:成功 -1:失敗或取消 */
 mail_send(rcpt)
   char *rcpt;
 {
+  /* Thor.981105: 進入前需設好 quote_file */
   /* itoc.041116: 進入前需設好 ve_title (之所以用 ve_title 是希望在 vedit 改標題時，也能一起改信件檔頭的標題) */
   HDR hdr;
   char fpath[64], folder[64], *msg;
@@ -812,7 +821,7 @@ mail_send(rcpt)
   fpath[0] = '\0';
   curredit = EDIT_MAIL;		/* Thor.981105: 直接指定寫信 */
 
-  if (vedit(fpath, userno ? 1 : 2) == -1)
+  if (vedit(fpath, userno ? 1 : 2) < 0)
   {
     unlink(fpath);
     vmsg(msg_cancel);
@@ -837,7 +846,7 @@ mail_send(rcpt)
 
     msg = msg_sent_ok;
     m_biff(userno);
-    mail_hold(fpath, rcpt, 0);
+    mail_hold(fpath, rcpt, ve_title, 0);
   }
   else
   {
@@ -856,7 +865,7 @@ mail_send(rcpt)
       refresh();
       userno = bsmtp(fpath, ve_title, rcpt, 0);
       msg = (userno >= 0) ? msg_sent_ok : "信件無法寄達，底稿備份在信箱";
-      mail_hold(fpath, rcpt, userno);
+      mail_hold(fpath, rcpt, ve_title, userno);
     }
   }
 
@@ -907,7 +916,10 @@ my_send(userid)		/* 站內寄信給 userid */
   vs_bar("寄  信");
   prints("收信人：%s", userid);
   if (vget(2, 0, "標題：", ve_title, TTLEN + 1, DOECHO))
+  {
+    *quote_file = '\0';
     mail_send(userid);
+  }
   return XO_HEAD;
 }
 
@@ -941,6 +953,7 @@ m_internet()
   if (vget(15, 0, "收信人：", rcpt, sizeof(rcpt), DOECHO) &&
     vget(17, 0, "標題：", ve_title, TTLEN + 1, DOECHO))
   {
+    *quote_file = '\0';
     mail_send(rcpt);
   }
 
@@ -999,9 +1012,14 @@ m_sysop()
     i = vans("請輸入代碼：[0] ") - '1';
     if (i >= 0 && i < j)
     {
-      clear();
+      vs_bar("寄  信");
+      prints("收信人：%s", sysoplist[i].userid);
+
       if (vget(2, 0, "標題：", ve_title, TTLEN + 1, DOECHO))
+      {
+	*quote_file = '\0';
         mail_send(sysoplist[i].userid);
+      }
     }
   }
   return 0;
@@ -1066,7 +1084,7 @@ multi_send(title)
   FILE *fp;
   HDR hdr;
   char buf[128], fpath[64], *userid;
-  int userno, reciper, listing;
+  int userno, reciper, listing, row;
   LinkList *wp;
 
   vs_bar(title ? "群組回信" : "群組寄信");
@@ -1168,7 +1186,7 @@ multi_send(title)
     utmp_mode(M_SMAIL);
     curredit = EDIT_MAIL | EDIT_LIST;
 
-    if (vedit(fpath, 1) == -1)
+    if (vedit(fpath, 1) < 0)
     {
       vmsg(msg_cancel);
       unlink(fpath);
@@ -1181,12 +1199,12 @@ multi_send(title)
       listing = 80;
       wp = ll_head;
       title = ve_title;
-      userno = 2;	/* 借用 userno 當印到哪一行 */
+      row = 2;	/* 印到哪一列 */
 
       do
       {
 	userid = wp->data;
-	if (userno < b_lines)	/* 最多印到 b_lines - 1 */
+	if (row < b_lines)	/* 最多印到 b_lines - 1 */
 	{
 	  /* 印出目前寄到哪一個 id */
 	  reciper = strlen(userid) + 1;
@@ -1194,7 +1212,7 @@ multi_send(title)
 	  {
 	    listing = reciper;
 	    outc('\n');
-	    userno++;
+	    row++;
 	  }
 	  else
 	  {
@@ -1210,6 +1228,9 @@ multi_send(title)
 	strcpy(hdr.title, title);
 	hdr.xmode = MAIL_MULTI;
 	rec_add(buf, &hdr, sizeof(HDR));
+
+	if ((userno = acct_userno(userid)) > 0)
+	  m_biff(userno);
       } while (wp = wp->next);
 
       if (fp = fopen(FN_RUN_MAIL_LOG, "a"))
@@ -1219,7 +1240,7 @@ multi_send(title)
 	fclose(fp);
       }
 
-      mail_hold(fpath, "群組寄信", 0);
+      mail_hold(fpath, "群組寄信", title, 0);
       unlink(fpath);
       vmsg(msg_sent_ok);
     }
@@ -1262,13 +1283,10 @@ do_mreply(hdr, noreply)
   HDR *hdr;
   int noreply;		/* 1:要 0:不要 檢查 MAIL_NOREPLY */
 {
-  /* 進來 do_mreply() 之前要準備好 quote_file */
-
   if ((noreply && (hdr->xmode & MAIL_NOREPLY)) ||
     HAS_PERM(PERM_DENYMAIL) ||
     !HAS_PERM(strchr(hdr->owner, '@') ? PERM_INTERNET : PERM_LOCAL))
   {
-    *quote_file = '\0';
     return XO_FOOT;
   }
 
@@ -1283,7 +1301,6 @@ do_mreply(hdr, noreply)
 #endif
     mail_reply(hdr);
 
-  *quote_file = '\0';
   return XO_HEAD;
 }
 
@@ -1638,7 +1655,7 @@ mbox_title(xo)		/* itoc.020113: 可以改自己信箱中的標題 */
   fhdr = (HDR *) xo_pool + cur;
   memcpy(&mhdr, fhdr, sizeof(HDR));
 
-  if (strcmp(cuser.userid, mhdr.owner) && !HAS_PERM(PERM_ALLBOARD))
+  if (!is_author(&mhdr) && !HAS_PERM(PERM_ALLBOARD))
     return XO_NONE;
 
   vget(b_lines, 0, "標題：", mhdr.title, TTLEN + 1, GCARRY);
@@ -1763,15 +1780,16 @@ mbox_sysop(xo)		/* itoc.001029.註解: 方便收 sysop/guest 的信 */
     if (HAS_PERM(PERM_SYSOP))		/* itoc.001029: 限制只有 SYSOPs 可以看 user 信箱 */
     {
       ACCT acct;
-      XO *xx;
+      XO *xt;
       char fpath[64];
 
       if (acct_get(msg_uid, &acct) > 0)
       {
+	alog("進入信箱", acct.userid);
 	usr_fpath(fpath, acct.userid, fn_dir);
-	xz[XZ_MBOX - XO_ZONE].xo = xx = xo_new(fpath);
+	xz[XZ_MBOX - XO_ZONE].xo = xt = xo_new(fpath);
 	xover(XZ_MBOX);
-	free(xx);
+	free(xt);
 	xz[XZ_MBOX - XO_ZONE].xo = xo;
       }
       return mbox_init(xo);
@@ -1779,16 +1797,17 @@ mbox_sysop(xo)		/* itoc.001029.註解: 方便收 sysop/guest 的信 */
 #else
     if (HAS_PERM(PERM_ALLADMIN))	/* itoc.030914: 讓所有 ADMINs 都可以看 sysop/guest 信箱 */
     {
-      int ch;
-      XO *xx;
+      char *userid;
+      XO *xt;
       char fpath[64];
 
       sprintf(fpath, "進入 (1)%s (2)%s 的信箱？[1] ", str_sysop, STR_GUEST);
-      ch = vans(fpath);
-      usr_fpath(fpath, (ch == '2') ? STR_GUEST : str_sysop, fn_dir);
-      xz[XZ_MBOX - XO_ZONE].xo = xx = xo_new(fpath);
+      userid = (vans(fpath) == '2') ? STR_GUEST : str_sysop;
+      alog("進入信箱", userid);
+      usr_fpath(fpath, userid, fn_dir);
+      xz[XZ_MBOX - XO_ZONE].xo = xt = xo_new(fpath);
       xover(XZ_MBOX);
-      free(xx);
+      free(xt);
       xz[XZ_MBOX - XO_ZONE].xo = xo;
       return mbox_init(xo);
     }
@@ -1823,7 +1842,7 @@ mbox_copy(xo)		/* itoc.011025: 取代 gem_gather */
   if (tag < 0)
     return XO_FOOT;
 
-  gem_buffer(xo->dir, tag ? NULL : (HDR *) xo_pool + (xo->pos - xo->top));
+  gem_buffer(xo->dir, tag ? NULL : (HDR *) xo_pool + (xo->pos - xo->top), NULL);
 
   zmsg("檔案標記完成。[注意] 拷貝後才能刪除原文！");
   return mbox_gem(xo);		/* 拷貝完直接進精華區 */
@@ -1916,6 +1935,14 @@ KeyFunc xmbox_cb[] =
   'g', gem_gather,
 
   't', mbox_tag,
+
+  '~', XoXselect,
+  'S', XoXsearch,
+  'a', XoXauthor,
+  '/', XoXtitle,
+  'f', XoXfull,
+  'G', XoXmark,
+  'L', XoXlocal,
 
   Ctrl('Q'), xo_uquery,
   Ctrl('O'), xo_usetup,

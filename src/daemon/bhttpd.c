@@ -31,9 +31,10 @@
   http://my.domain/delmail?##&###              刪除信箱中第 ## 篇文章 (其 chrono 是 ###)
   http://my.domain/mmail?##&###                標記信箱中第 ## 篇文章 (其 chrono 是 ###)
   http://my.domain/query?userid                查詢 userid
-  http://my.domain/img/filename                顯示圖檔
+  http://my.domain/img?filename                顯示圖檔
   http://my.domain/rss?brdname                 各看板的RSS Feed
   http://my.domain/class?folder                列出分類中 [folder] 這個卷宗下的所有看板
+  http://my.domain/robots.txt                  Robot Exclusion
 
 #endif
 
@@ -47,9 +48,11 @@
 #include <netinet/tcp.h>
 #include <sys/resource.h>
 
+#undef	ROBOT_EXCLUSION		/* robot exclusion */
+
 
 #define SERVER_USAGE
-#define	LOG_VERBOSE		/* 詳細紀錄 */
+#undef	LOG_VERBOSE		/* 詳細紀錄 */
 
 
 #define BHTTP_PIDFILE	"run/bhttp.pid"
@@ -124,12 +127,13 @@ typedef struct Agent
   time_t tbegin;		/* 連線開始時間 */
   time_t uptime;		/* 上次下指令的時間 */
 
-  char url[48];
+  char url[48];			/* 欲瀏覽的網頁 */
   char *urlp;
 
   char cookie[32];
   int setcookie;
-  char *modified;
+
+  char modified[30];
 
   /* 使用者資料要先 acct_fetch() 才能使用 */
   int userno;
@@ -389,7 +393,6 @@ ansi_color(psrc)
   uschar *src, *ptr;
   int ch, value;
   int color = old_color;
-
 #ifdef HAVE_ANSIATTR
   int attr = old_attr;
 #endif
@@ -520,7 +523,7 @@ ansi_html(fpw, src)
   {
     ch1 = ch2;
     ch2 = *(++src);
-    if (ch1 & 0x80)
+    if (IS_ZHC_HI(ch1))
     {
       while (ch2 == ANSI_TAG)
       {
@@ -536,12 +539,10 @@ ansi_html(fpw, src)
       {
 	if (ch2 < ' ')		/* 怕出現\n */
 	  fputc(ch2, fpw);
-
 #ifdef HAVE_SAKURA
 	else if (scode = sakura2unicode((ch1 << 8) | ch2))
 	  fprintf(fpw, "&#%d;", scode);
 #endif
-
 	else
 	{
 	  fputc(ch1, fpw);
@@ -562,13 +563,9 @@ ansi_html(fpw, src)
       do
       {
 	if (ch2 == '[')		/* 顏色 */
-	{
 	  ch2 = ansi_color(&src);
-	}
 	else if (ch2 == '*')	/* 控制碼 */
-	{
 	  fputc('*', fpw);
-	}
 	else			/* 其他直接刪除 */
 	  ch2 = ansi_remove(&src);
       } while (ch2 == ANSI_TAG && (ch2 = *(++src)));
@@ -599,10 +596,8 @@ ansi_html(fpw, src)
 	ch2 = *(++src);
       }
     }
-
 #ifdef HAVE_HYPERLINK
-    /* 處理超連結 */
-    else if (linkEnd)
+    else if (linkEnd)		/* 處理超連結 */
     {
       fputc(ch1, fpw);
       if (linkEnd <= src)
@@ -611,20 +606,19 @@ ansi_html(fpw, src)
 	linkEnd = NULL;
       }
     }
+#endif
     else
     {
+#ifdef HAVE_HYPERLINK
       /* 其他的自己加吧 :) */
       if (!str_ncmp(src - 1, "http://", 7))
 	ansi_hyperlink(fpw, src - 1);
       else if (!str_ncmp(src - 1, "telnet://", 9))
 	ansi_hyperlink(fpw, src - 1);
+#endif
 
       fputc(ch1, fpw);
     }
-#else
-    else
-      fputc(ch1, fpw);
-#endif
   }
 }
 
@@ -640,12 +634,12 @@ str_html(src, len)
   ch = *src;
   while (ch && src < end)
   {
-    if (ch & 0x80)
+    if (IS_ZHC_HI(ch))
     {
       in_chi = *(++src);
       while (in_chi == ANSI_TAG)
       {
-	++src;
+	src++;
 	in_chi = ansi_remove(&src);
       }
 
@@ -653,7 +647,6 @@ str_html(src, len)
       {
 	if (in_chi < ' ')	/* 可能只有半個字，前半部就不要了 */
 	  *dst++ = in_chi;
-
 #ifdef HAVE_SAKURA
 	else if (len = sakura2unicode((ch << 8) + in_chi))
 	{
@@ -661,7 +654,6 @@ str_html(src, len)
 	  dst += 8;
 	}
 #endif
-
 	else
 	{
 	  *dst++ = ch;
@@ -673,7 +665,7 @@ str_html(src, len)
     }
     else if (ch == ANSI_TAG)
     {
-      ++src;
+      src++;
       ch = ansi_remove(&src);
       continue;
     }
@@ -731,7 +723,7 @@ ansi_quote(fpw, src)		/* 如果是引言，就略過所有的 ANSI 碼 */
     else
       now_color = 0x00003640;
   }
-  else if (ch1 == 0xA1 && ch2 == 0xB0)	/* ※ 引言者 */
+  else if (ch1 == '\241' && ch2 == '\260')	/* ※ 引言者 */
   {
     now_color = 0x00013640;
   }
@@ -748,8 +740,6 @@ ansi_quote(fpw, src)		/* 如果是引言，就略過所有的 ANSI 碼 */
 }
 
 
-#define LINE_HEADER	3	/* 檔頭有三行 */
-
 static void
 txt2htm(fpw, fp)
   FILE *fpw;
@@ -765,8 +755,7 @@ txt2htm(fpw, fp)
   /* 處理檔頭 */
   for (i = 0; i < LINE_HEADER; i++)
   {
-    if (!fgets(buf, ANSILINELEN, fp))	/* 雖然連檔頭都還沒印完，但是檔案已經結束，
-					 * 直接離開 */
+    if (!fgets(buf, ANSILINELEN, fp))	/* 雖然連檔頭都還沒印完，但是檔案已經結束，直接離開 */
     {
       fputs("</table>\n", fpw);
       return;
@@ -776,9 +765,7 @@ txt2htm(fpw, fp)
       break;
 
     /* 作者/看板 檔頭有二欄，特別處理 */
-    if (i == 0 && (
-	(pbrd = strstr(buf, "看板:")) ||
-	(pbrd = strstr(buf, "站內:"))))
+    if (i == 0 && ((pbrd = strstr(buf, "看板:")) || (pbrd = strstr(buf, "站內:"))))
     {
       if (board = strchr(pbrd, '\n'))
 	*board = '\0';
@@ -858,7 +845,7 @@ out_http(ap, code, type)
   int state;
 
   fpw = ap->fpw;
-  state = code & 0xFF;
+  state = code & ~HS_REFRESH;
 
   /* HTTP 1.0 檔頭 */
   time(&now);
@@ -874,13 +861,10 @@ out_http(ap, code, type)
   }
   else if (state == HS_REDIRECT)/* Location之後不需要內容 */
   {
-    if (!type)
-      type = "";
-
 #if BHTTP_PORT == 80
-    fprintf(fpw, "Location: http://" MYHOSTNAME "/%s\r\n\r\n", type);
+    fprintf(fpw, "Location: http://" MYHOSTNAME "/\r\n\r\n");
 #else
-    fprintf(fpw, "Location: http://" MYHOSTNAME ":%d/%s\r\n\r\n", BHTTP_PORT, type);
+    fprintf(fpw, "Location: http://" MYHOSTNAME ":%d/\r\n\r\n", BHTTP_PORT);
 #endif
   }
   else
@@ -899,7 +883,7 @@ out_http(ap, code, type)
     else
       fprintf(fpw, "Content-Type: %s\r\n", type);
 
-    if (ap->setcookie)		/* acct_login() 完以後才需要 Set-Cookie */
+    if (ap->setcookie)		/* cmd_login() 完以後才需要 Set-Cookie */
       fprintf(fpw, "Set-Cookie: user=%s; path=/\r\n", ap->cookie);
   }
 
@@ -958,26 +942,30 @@ out_title(fpw, title)
   /* html 檔案開始 */
   fprintf(fpw, "\r\n<HTML><HEAD>\n"
     "<meta http-equiv=Content-Type content=\"text/html; charset=" MYCHARSET "\">\n"
+#ifdef ROBOT_EXCLUSION
+    "<meta name=robots content=noindex,nofollow>\n"
+#endif
     "<title>-=" BBSNAME "=- %s</title>\n", title);
 
-  fputs("<script language=javascript>\n"
+  fputs("<script type=text/javascript>\n<!--\n"
     "  function mOver(obj) {obj.bgColor='" HCOLOR_BAR "';}\n"
     "  function mOut(obj) {obj.bgColor='" HCOLOR_BG "';}\n"
-    "</script>\n<style type=text/css>\n"
+    "-->\n</script>\n"
+    "<style type=text/css>\n"
     "  PRE {font-size: 15pt; line-height: 15pt; font-weight: lighter; background-color: #000000; color: #C0C0C0;}\n"
     "  TD  {font-size: 15pt; line-height: 15pt; font-weight: lighter;}\n"
     "</style>\n"
-    "<link rel=stylesheet href=/img/ansi.css type=text/css>\n"
+    "<link rel=stylesheet href=/img?ansi.css type=text/css>\n"
     "</head>\n"
     "<BODY bgcolor=" HCOLOR_BG " text=" HCOLOR_TEXT " link=" HCOLOR_LINK " vlink=" HCOLOR_VLINK " alink=" HCOLOR_ALINK "><CENTER>\n"
-    "<a href=/><img src=/img/site.gif border=0></a><br>\n"
-    "<input type=image src=/img/back.gif onclick=\"javascript:history.go(-1);\"> / "
-    "<a href=/class><img src=/img/class.gif border=0></a> / "
-    "<a href=/brdlist><img src=/img/board.gif border=0></a> / "
-    "<a href=/fvrlist><img src=/img/favor.gif border=0></a> / "
-    "<a href=/mbox><img src=/img/mbox.gif border=0></a> / "
-    "<a href=/usrlist><img src=/img/user.gif border=0></a> / "
-    "<a href=telnet://" MYHOSTNAME "><img src=/img/telnet.gif border=0></a><br>\n", fpw);
+    "<a href=/><img src=/img?site.gif border=0></a><br>\n"
+    "<input type=image src=/img?back.gif onclick=\"javascript:history.go(-1);\"> / "
+    "<a href=/class><img src=/img?class.gif border=0></a> / "
+    "<a href=/brdlist><img src=/img?board.gif border=0></a> / "
+    "<a href=/fvrlist><img src=/img?favor.gif border=0></a> / "
+    "<a href=/mbox><img src=/img?mbox.gif border=0></a> / "
+    "<a href=/usrlist><img src=/img?user.gif border=0></a> / "
+    "<a href=telnet://" MYHOSTNAME "><img src=/img?telnet.gif border=0></a><br>\n", fpw);
 }
 
 
@@ -1005,7 +993,6 @@ static void
 out_style(fpw)
   FILE *fpw;
 {
-
 #ifdef HAVE_HYPERLINK
   fputs("<style type=text/css>\n"
     "  a:link.PRE    {COLOR: #FFFFFF}\n"
@@ -1060,8 +1047,9 @@ out_reload(fpw, msg)		/* God.050327: 將主視窗 reload 並關掉新開視窗 */
 #define hex2int(x)	((x >= 'A') ? (x - 'A' + 10) : (x - '0'))
 
 static int			/* 1:成功 */
-arg_analyze(argc, str, arg1, arg2, arg3, arg4)
+arg_analyze(argc, mark, str, arg1, arg2, arg3, arg4)
   int argc;			/* 有幾個參數 */
+  int mark;			/* !=0: str 要是 mark 開頭的字串 */
   char *str;			/* 引數 */
   char **arg1;			/* 參數一 */
   char **arg2;			/* 參數二 */
@@ -1071,7 +1059,7 @@ arg_analyze(argc, str, arg1, arg2, arg3, arg4)
   int i, ch;
   char *dst;
 
-  if (!(ch = *str))
+  if ((mark && *str++ != mark) || !(ch = *str))
   {
     *arg1 = NULL;
     return 0;
@@ -1106,7 +1094,7 @@ arg_analyze(argc, str, arg1, arg2, arg3, arg4)
       if (isxdigit(ch) && isxdigit(str[1]))
       {
 	ch = (hex2int(ch) << 4) + hex2int(str[1]);
-	++str;
+	str++;
 	if (ch != '\r')		/* '\r' 就不要了 */
 	  *dst++ = ch;
       }
@@ -1131,6 +1119,19 @@ arg_analyze(argc, str, arg1, arg2, arg3, arg4)
 /* 由 Cookie 看使用者是否登入				 */
 /* ----------------------------------------------------- */
 
+static int guestuno = 0;
+
+static void
+guest_userno()
+{
+  char fpath[64];
+  ACCT acct;
+
+  usr_fpath(fpath, STR_GUEST, FN_ACCT);
+  if (!rec_get(fpath, &acct, sizeof(ACCT), 0))
+    guestuno = acct.userno;
+}
+
 static int			/* 1:登入成功 0:登入失敗 */
 acct_fetch(ap)
   Agent *ap;
@@ -1142,7 +1143,7 @@ acct_fetch(ap)
   if (ap->cookie[0])
   {
     /* u=userid&p=passwd */
-    if (!arg_analyze(2, ap->cookie, &userid, &passwd, NULL, NULL))
+    if (!arg_analyze(2, 0, ap->cookie, &userid, &passwd, NULL, NULL))
       return 0;
 
     passwd += 2;		/* skip "p=" */
@@ -1164,7 +1165,7 @@ acct_fetch(ap)
   }
 
   /* 沒有登入、登入失敗 */
-  ap->userno = 3;		/* 填入實際guest的userno，以便做pal檢查 */
+  ap->userno = guestuno;		/* 填入實際guest的userno，以便做pal檢查 */
   ap->userlevel = 0;
   strcpy(ap->userid, STR_GUEST);
   strcpy(ap->username, STR_GUEST);
@@ -1219,7 +1220,6 @@ is_hisbad(up, userno)		/* 參考 pal.c:is_obad() */
   UTMP *up;
   int userno;
 {
-
 #ifdef HAVE_BADPAL
   return pertain_pal(up->pal_spool, up->pal_max, -userno);
 #else
@@ -1316,7 +1316,6 @@ is_brdbad(userno, bpal)		/* 參考 pal.c:is_bbad() */
   int userno;
   BPAL *bpal;
 {
-
 #ifdef HAVE_BADPAL
   return pertain_pal(bpal->pal_spool, bpal->pal_max, -userno);
 #else
@@ -1402,7 +1401,7 @@ Ben_Perm(brd, uno, uid, ulevel)	/* 參考 board.c:Ben_Perm() */
 
   /* itoc.030515: 看板總管重新判斷 */
   else if (ulevel & PERM_ALLBOARD)
-    bits = BRD_L_BIT | BRD_R_BIT | BRD_W_BIT | BRD_X_BIT | BRD_M_BIT;
+    bits = BRD_L_BIT | BRD_R_BIT | BRD_W_BIT | BRD_X_BIT;
 
   return bits;
 }
@@ -1418,7 +1417,7 @@ brd_get(bname)
   tail = bhdr + bshm->number;
   do
   {
-    if (!str_cmp(bname, bhdr->brdname))
+    if (!strcmp(bname, bhdr->brdname))
       return bhdr;
   } while (++bhdr < tail);
   return NULL;
@@ -1430,8 +1429,10 @@ ben_perm(ap, brdname)
   Agent *ap;
   char *brdname;
 {
-  if (acct_fetch(ap))
-    return Ben_Perm(brd_get(brdname), ap->userno, ap->userid, ap->userlevel);
+  BRD *brd;
+
+  if (acct_fetch(ap) && (brd = brd_get(brdname)))
+    return Ben_Perm(brd, ap->userno, ap->userid, ap->userlevel);
   return 0;
 }
 
@@ -1557,7 +1558,7 @@ cmdlist_list(ap, title, list_tie, list_item)
   char *number;
   FILE *fpw;
 
-  if (!arg_analyze(1, ap->urlp, &number, NULL, NULL, NULL))
+  if (!arg_analyze(1, '?', ap->urlp, &number, NULL, NULL, NULL))
     start = 1;
   else
     start = atoi(number);
@@ -1853,7 +1854,7 @@ cmd_class(ap)
   HDR hdr;
   FILE *fpw = out_head(ap, "分類看板");
 
-  if (!arg_analyze(1, ap->urlp, &xname, NULL, NULL, NULL))
+  if (!arg_analyze(1, '?', ap->urlp, &xname, NULL, NULL, NULL))
     xname = CLASS_INIFILE;
 
   if (strlen(xname) > 12)
@@ -1922,7 +1923,7 @@ postlist_list(fpw, folder, brdname, start, total)
 {
   HDR hdr;
   char owner[80], *ptr1, *ptr2;
-  int fd;
+  int fd, xmode;
 
   fputs("<table cellspacing=0 cellpadding=4 border=0>\n<tr bgcolor=" HCOLOR_TIE ">\n"
     "  <td width=15>標</td>\n"
@@ -1959,22 +1960,25 @@ postlist_list(fpw, folder, brdname, start, total)
 
       fputs("<tr onmouseover=mOver(this); onmouseout=mOut(this);>\n", fpw);
       if (brdname)
-	fprintf(fpw, "  <td><a href=/mpost?%s&%d&%d><img src=/img/mark.gif border=0></a></td>\n"
-	  "  <td><a href=/dpost?%s&%d&%d><img src=/img/del.gif border=0></a></td>\n",
+      {
+	fprintf(fpw, "  <td><a href=/mpost?%s&%d&%d><img src=/img?mark.gif border=0></a></td>\n"
+	  "  <td><a href=/dpost?%s&%d&%d><img src=/img?del.gif border=0></a></td>\n",
 	  brdname, i, hdr.chrono, brdname, i, hdr.chrono);
+      }
       else
-	fprintf(fpw, "  <td><a href=/mmail?%d&%d><img src=/img/mark.gif border=0></a></td>\n"
-	  "  <td><a href=/dmail?%d&%d><img src=/img/del.gif border=0></a></td>\n",
+      {
+	fprintf(fpw, "  <td><a href=/mmail?%d&%d><img src=/img?mark.gif border=0></a></td>\n"
+	  "  <td><a href=/dmail?%d&%d><img src=/img?del.gif border=0></a></td>\n",
 	  i, hdr.chrono, i, hdr.chrono);
+      }
 
-      if (hdr.xmode & POST_BOTTOM)
-	fputs("  <td>重要</td>\n", fpw);
-      else
-	fprintf(fpw, "  <td>%d</td>\n", i);
-      fprintf(fpw, "  <td>%s</td>\n  <td>", hdr.xmode & POST_MARKED ? "m" : "");
+      xmode = hdr.xmode;
+
+      fprintf(fpw, "  <td>%d</td>\n  <td>%s</td>\n  <td>",
+	xmode & POST_BOTTOM ? -1 : i, xmode & POST_MARKED ? "m" : "");
 
 #ifdef HAVE_SCORE
-      if (hdr.xmode & POST_SCORE)
+      if (xmode & POST_SCORE)
 	fprintf(fpw, "<font color='%s'>%d</font>", hdr.score >= 0 ? "red" : "green", abs(hdr.score));
 #endif
 
@@ -2024,7 +2028,7 @@ postlist_neck(fpw, start, total, brdname)
   fprintf(fpw, "></td>\n  <td width=20%% align=center><a href=/dopost?%s target=_blank>發表文章</a></td>\n"
     "  <td width=20%% align=center><a href=/gem?%s>精華區</a></td>\n"
     "  <td width=20%% align=center><a href=/brdlist>看板列表</a>&nbsp;"
-    "<a href=/rss?%s><img border=0 src=/img/xml.gif alt=\"RSS 訂閱\這個看板\"></a></td>\n"
+    "<a href=/rss?%s><img border=0 src=/img?xml.gif alt=\"RSS 訂閱\這個看板\"></a></td>\n"
     "</tr></table><br>\n",
     brdname, brdname, brdname, brdname);
 }
@@ -2038,7 +2042,7 @@ cmd_postlist(ap)
   char folder[64], *brdname, *number;
   FILE *fpw = out_head(ap, "文章列表");
 
-  if (!arg_analyze(2, ap->urlp, &brdname, &number, NULL, NULL))
+  if (!arg_analyze(2, '?', ap->urlp, &brdname, &number, NULL, NULL))
   {
     if (brdname)
       number = "0";
@@ -2108,7 +2112,7 @@ cmd_mboxlist(ap)
   if (!acct_fetch(ap))
     return HS_ERR_LOGIN;
 
-  if (!arg_analyze(1, ap->urlp, &number, NULL, NULL, NULL))
+  if (!arg_analyze(1, '?', ap->urlp, &number, NULL, NULL, NULL))
     number = "0";
 
   usr_fpath(folder, ap->userid, FN_DIR);
@@ -2155,7 +2159,7 @@ cmd_gemlist(ap)
   HDR hdr;
   FILE *fpw = out_head(ap, "精華區");
 
-  if (!arg_analyze(2, ap->urlp, &brdname, &xname, NULL, NULL))
+  if (!arg_analyze(2, '?', ap->urlp, &brdname, &xname, NULL, NULL))
   {
     if (brdname)
       xname = FN_DIR;
@@ -2179,7 +2183,7 @@ cmd_gemlist(ap)
 
   if (*xname == '.')
     sprintf(folder, "gem/brd/%s/%s", brdname, FN_DIR);
-  else				/* if (*xname == 'F') */
+  else /* if (*xname == 'F') */
     sprintf(folder, "gem/brd/%s/%c/%s", brdname, xname[7], xname);
 
   if ((fd = open(folder, O_RDONLY)) >= 0)
@@ -2191,21 +2195,21 @@ cmd_gemlist(ap)
 	"  <td>%d</td>\n", i);
       if (hdr.xmode & GEM_RESTRICT)
       {
-	fputs("  <td>[唯讀] 資料保密</td>\n</tr>\n", fpw);
+	fputs("  <td>◇ 資料保密</td>\n</tr>\n", fpw);
       }
       else if (hdr.xname[0] == 'A')	/* 文章 */
       {
-	fprintf(fpw, "  <td><a href=/gmore?%s&%s&%d>[文章] %s</a></td>\n</tr>\n",
+	fprintf(fpw, "  <td><a href=/gmore?%s&%s&%d>◇ %s</a></td>\n</tr>\n",
 	  brdname, xname, i, str_html(hdr.title, TTLEN));
       }
       else if (hdr.xname[0] == 'F')	/* 卷宗 */
       {
-	fprintf(fpw, "  <td><a href=/gem?%s&%s>[卷宗] %s</a></td>\n</tr>\n",
+	fprintf(fpw, "  <td><a href=/gem?%s&%s>◆ %s</a></td>\n</tr>\n",
 	  brdname, hdr.xname, str_html(hdr.title, TTLEN));
       }
       else				/* 其他類別就不秀了 */
       {
-	fputs("  <td>[唯讀] 其他資料</td>\n</tr>\n", fpw);
+	fputs("  <td>◇ 其他資料</td>\n</tr>\n", fpw);
       }
 
       i++;
@@ -2300,10 +2304,8 @@ more_item(fpw, folder, pos, brdname)
       if (!(hdr.xmode & POST_RESTRICT))
       {
 #endif
-
 	hdr_fpath(fpath, folder, &hdr);
 	out_article(fpw, fpath);
-
 #ifdef HAVE_REFUSEMARK
       }
       else
@@ -2327,7 +2329,7 @@ cmd_brdmore(ap)
   char folder[64], *brdname, *number;
   FILE *fpw = out_head(ap, "閱\讀看板文章");
 
-  if (!arg_analyze(2, ap->urlp, &brdname, &number, NULL, NULL))
+  if (!arg_analyze(2, '?', ap->urlp, &brdname, &number, NULL, NULL))
     return HS_ERROR;
 
   if (!allow_brdname(ap, brdname))
@@ -2354,7 +2356,7 @@ cmd_mboxmore(ap)
   char folder[64], *number;
   FILE *fpw = out_head(ap, "閱\讀信箱文章");
 
-  if (!arg_analyze(1, ap->urlp, &number, NULL, NULL, NULL))
+  if (!arg_analyze(1, '?', ap->urlp, &number, NULL, NULL, NULL))
     return HS_ERROR;
 
   if (!acct_fetch(ap))
@@ -2387,7 +2389,6 @@ do_brdmost(fpw, folder, title)
   {
     while (read(fd, &hdr, sizeof(HDR)) == sizeof(HDR))
     {
-
 #ifdef HAVE_REFUSEMARK
       if (hdr.xmode & POST_RESTRICT)
 	continue;
@@ -2429,7 +2430,7 @@ cmd_brdmost(ap)
   HDR hdr;
   FILE *fpw = out_head(ap, "閱\讀看板同標題文章");
 
-  if (!arg_analyze(2, ap->urlp, &brdname, &number, NULL, NULL))
+  if (!arg_analyze(2, '?', ap->urlp, &brdname, &number, NULL, NULL))
     return HS_ERROR;
 
   if (!allow_brdname(ap, brdname))
@@ -2474,7 +2475,7 @@ cmd_gemmore(ap)
   HDR hdr;
   FILE *fpw = out_head(ap, "閱\讀精華區文章");
 
-  if (!arg_analyze(3, ap->urlp, &brdname, &xname, &number, NULL))
+  if (!arg_analyze(3, '?', ap->urlp, &brdname, &xname, &number, NULL))
     return HS_ERROR;
 
   if (*xname != 'F' && strlen(xname) != 8 && strcmp(xname, FN_DIR))
@@ -2485,7 +2486,7 @@ cmd_gemmore(ap)
 
   if (*xname == '.')
     gem_fpath(folder, brdname, FN_DIR);
-  else				/* if (*xname == 'F') */
+  else /* if (*xname == 'F') */
     sprintf(folder, "gem/brd/%s/%c/%s", brdname, xname[7], xname);
 
   if ((pos = atoi(number)) <= 0)
@@ -2535,7 +2536,7 @@ cmd_dopost(ap)
   char *brdname;
   FILE *fpw = out_head(ap, "發表文章");
 
-  if (!arg_analyze(1, ap->urlp, &brdname, NULL, NULL, NULL))
+  if (!arg_analyze(1, '?', ap->urlp, &brdname, NULL, NULL, NULL))
     return HS_ERROR;
 
   if (!(ben_perm(ap, brdname) & BRD_W_BIT))
@@ -2575,7 +2576,7 @@ cmd_domail(ap)
   if (!acct_fetch(ap))
     return HS_ERR_LOGIN;
 
-  if (!arg_analyze(1, ap->urlp, &userid, NULL, NULL, NULL))
+  if (!arg_analyze(1, '?', ap->urlp, &userid, NULL, NULL, NULL))
     userid = "";
 
   fputs("<form method=post onsubmit=\"if(u.value.length==0 || t.value.length==0 || c.value.length==0) {alert('收信人、標題、內容均不可為空白'); return false;} return true;\">\n"
@@ -2630,13 +2631,19 @@ move_post(userid, hdr, folder, by_bm)	/* 將 hdr 從 folder 搬到別的板 */
     brd_fpath(fnew, board, FN_DIR);
     hdr_stamp(fnew, HDR_LINK | 'A', &post, fpath);
 
-    /* 直接複製 trailing data */
-    memcpy(post.owner, hdr->owner, TTLEN + 140);
+    /* 直接複製 trailing data：owner(含)以下所有欄位 */
+    memcpy(post.owner, hdr->owner, sizeof(HDR) -
+      (sizeof(post.chrono) + sizeof(post.xmode) + sizeof(post.xid) + sizeof(post.xname)));
 
     if (by_bm)
       sprintf(post.title, "%-13s%.59s", userid, hdr->title);
 
+    /* wakefield.081212: 移除原本置底 */
+    /*
     rec_bot(fnew, &post, sizeof(HDR));
+    */
+    rec_add(fnew, &post, sizeof(HDR));;
+
     brd_get(board)->btime = -1;
   }
   unlink(fpath);
@@ -2666,8 +2673,9 @@ post_op(ap, title, msg)
   HDR hdr;
   usint bits;
   char *brdname, *number, *stamp, folder[64];
+  FILE *fpw;
 
-  if (!arg_analyze(3, ap->urlp, &brdname, &number, &stamp, NULL) ||
+  if (!arg_analyze(3, '?', ap->urlp, &brdname, &number, &stamp, NULL) ||
     (pos = atoi(number) - 1) < 0 ||
     (chrono = atoi(stamp)) < 0)
     return HS_ERROR;
@@ -2687,28 +2695,32 @@ post_op(ap, title, msg)
       hdr.xmode ^= POST_MARKED;
       rec_put(folder, &hdr, sizeof(HDR), pos, NULL);
     }
-    else if (!(hdr.xmode & POST_MARKED))
+    else /* if (*title == 'd') */
     {
-      if (!(bits & BRD_X_BIT) &&
-	(!(bits & BRD_W_BIT) || strcmp(ap->userid, hdr.owner)))
-	return HS_ERR_PERM;
-
-      rec_del(folder, sizeof(HDR), pos, NULL);
-      move_post(ap->userid, &hdr, folder, bits & BRD_X_BIT);
-      brd_get(brdname)->btime = -1;
-      /* 連線砍信 */
-      if ((hdr.xmode & POST_OUTGO) &&	/* 外轉信件 */
-	hdr.chrono > (time(0) - 7 * 86400))	/* 7 天之內有效 */
+      if (!(hdr.xmode & POST_MARKED))
       {
-	hdr.chrono = -1;
-	outgo_post(&hdr, brdname);
+	if (!(bits & BRD_X_BIT) &&
+	  (!(bits & BRD_W_BIT) || strcmp(ap->userid, hdr.owner)))
+	  return HS_ERR_PERM;
+
+	rec_del(folder, sizeof(HDR), pos, NULL);
+	move_post(ap->userid, &hdr, folder, bits & BRD_X_BIT);
+	brd_get(brdname)->btime = -1;
+	/* 連線砍信 */
+	if ((hdr.xmode & POST_OUTGO) &&		/* 外轉信件 */
+	  hdr.chrono > (time(0) - 7 * 86400))	/* 7 天之內有效 */
+	{
+	  hdr.chrono = -1;
+	  outgo_post(&hdr, brdname);
+	}
       }
     }
 
     sprintf(folder, "/brd?%s&%d", brdname, (pos - 1) / HTML_TALL * HTML_TALL + 1);
-    out_title(out_http(ap, HS_OK | HS_REFRESH, folder), title + 1);
-    out_mesg(ap->fpw, msg);
-    fprintf(ap->fpw, "<a href=%s>回文章列表</a>\n", folder);
+    fpw = out_http(ap, HS_OK | HS_REFRESH, folder);
+    out_title(fpw, title + 1);
+    out_mesg(fpw, msg);
+    fprintf(fpw, "<a href=%s>回文章列表</a>\n", folder);
 
     return HS_END;
   }
@@ -2739,7 +2751,7 @@ cmd_predelpost(ap)
   char *brdname, *number, *stamp;
   FILE *fpw = out_head(ap, "確認刪除文章");
 
-  if (!arg_analyze(3, ap->urlp, &brdname, &number, &stamp, NULL))
+  if (!arg_analyze(3, '?', ap->urlp, &brdname, &number, &stamp, NULL))
     return HS_ERROR;
 
   out_mesg(fpw, "若確定要刪除此篇文章，請再次點選以下連結；若要取消刪除，請按 [上一頁]");
@@ -2764,7 +2776,7 @@ mail_op(ap, title, msg)
   HDR hdr;
   char *number, *stamp, folder[64], fpath[64];
 
-  if (!arg_analyze(2, ap->urlp, &number, &stamp, NULL, NULL) ||
+  if (!arg_analyze(2, '?', ap->urlp, &number, &stamp, NULL, NULL) ||
     (pos = atoi(number) - 1) < 0 ||
     (chrono = atoi(stamp)) < 0)
     return HS_ERROR;
@@ -2781,11 +2793,14 @@ mail_op(ap, title, msg)
       hdr.xmode ^= POST_MARKED;
       rec_put(folder, &hdr, sizeof(HDR), pos, NULL);
     }
-    else if (!(hdr.xmode & POST_MARKED))
+    else /* if (*title == 'd') */
     {
-      rec_del(folder, sizeof(HDR), pos, NULL);
-      hdr_fpath(fpath, folder, &hdr);
-      unlink(fpath);
+      if (!(hdr.xmode & POST_MARKED))
+      {
+	rec_del(folder, sizeof(HDR), pos, NULL);
+	hdr_fpath(fpath, folder, &hdr);
+	unlink(fpath);
+      }
     }
 
     sprintf(folder, "/mbox?%d", (pos - 1) / HTML_TALL * HTML_TALL + 1);
@@ -2821,7 +2836,7 @@ cmd_predelmail(ap)
   char *number, *stamp;
   FILE *fpw = out_head(ap, "確認刪除信件");
 
-  if (!arg_analyze(2, ap->urlp, &number, &stamp, NULL, NULL))
+  if (!arg_analyze(2, '?', ap->urlp, &number, &stamp, NULL, NULL))
     return HS_ERROR;
 
   out_mesg(fpw, "若確定要刪除此篇信件，請再次點選以下連結；若要取消刪除，請按 [上一頁]");
@@ -2845,7 +2860,7 @@ cmd_query(ap)
   char fpath[64], *userid;
   FILE *fpw = out_head(ap, "查詢使用者");
 
-  if (!arg_analyze(1, ap->urlp, &userid, NULL, NULL, NULL))
+  if (!arg_analyze(1, '?', ap->urlp, &userid, NULL, NULL, NULL))
     return HS_ERROR;
 
   if (!allow_userid(ap, userid))
@@ -2869,11 +2884,10 @@ cmd_query(ap)
 
     usr_fpath(fpath, acct.userid, FN_PLANS);
     out_article(fpw, fpath);
+    return HS_END;
   }
-  else
-    return HS_ERR_USER;
 
-  return HS_END;
+  return HS_ERR_USER;
 }
 
 
@@ -2905,12 +2919,12 @@ cmd_image(ap)
 {
   FILE *fpw;
   struct stat st;
-  char *fname, *ptr, fpath[80];
+  char *fname, *ptr, fpath[64];
 
-  if (!arg_analyze(1, ap->urlp, &fname, NULL, NULL, NULL))
+  if (!arg_analyze(1, '?', ap->urlp, &fname, NULL, NULL, NULL))
     return HS_NOTFOUND;
 
-  if (!valid_path(fname) || !(ptr = strrchr(fname, '.')))
+  if (!valid_path(fname) || !(ptr = strchr(fname, '.')))
     return HS_NOTFOUND;
 
   /* 支援格式 */
@@ -2931,7 +2945,7 @@ cmd_image(ap)
   if (stat(fpath, &st))
     return HS_NOTFOUND;
 
-  if (ap->modified && !strcmp(Gtime(&st.st_mtime), ap->modified))	/* 沒有變更不需要傳輸 */
+  if (ap->modified[0] && !strcmp(Gtime(&st.st_mtime), ap->modified))	/* 沒有變更不需要傳輸 */
     return HS_NOTMOIDIFY;
 
   fpw = out_http(ap, HS_OK, ptr);
@@ -2958,7 +2972,7 @@ cmd_rss(ap)
   FILE *fpw;
   int fd;
 
-  if (!arg_analyze(1, ap->urlp, &brdname, NULL, NULL, NULL))
+  if (!arg_analyze(1, '?', ap->urlp, &brdname, NULL, NULL, NULL))
     return HS_BADREQUEST;
 
   if (!(brd = brd_get(brdname)))
@@ -2969,7 +2983,7 @@ cmd_rss(ap)
 
   blast = brd->blast;
 
-  if (ap->modified && !strcmp(Gtime(&blast), ap->modified))	/* 沒有變更不需要傳輸 */
+  if (ap->modified[0] && !strcmp(Gtime(&blast), ap->modified))	/* 沒有變更不需要傳輸 */
     return HS_NOTMOIDIFY;
 
   fpw = out_http(ap, HS_OK, "application/xml");
@@ -2982,50 +2996,86 @@ cmd_rss(ap)
   ptr = Gtime(&blast);
   ptr[4] = '\0';
   fprintf(fpw, "<title>" BBSNAME "-%s板</title>\n"
+#if BHTTP_PORT == 80
     "<link>http://" MYHOSTNAME "/brd?%s</link>\n"
+#else
+    "<link>http://" MYHOSTNAME ":%d/brd?%s</link>\n"
+#endif
     "<description>%s</description>\n"
     "<language>zh-tw</language>\n"
     "<lastBuildDate>%s ",
-    brdname, brdname,
+    brdname,
+#if BHTTP_PORT != 80
+    BHTTP_PORT,
+#endif
+    brdname,
     str_html(brd->title, TTLEN), ptr);
   ptr += 5;
   if (*ptr == '0')
-    ++ptr;
+    ptr++;
   fprintf(fpw, "%s</lastBuildDate>\n<image>\n"
     "<title>" BBSNAME "</title>"
+#if BHTTP_PORT == 80
     "<link>http://" MYHOSTNAME "</link>\n"
-    "<url>http://" MYHOSTNAME "/img/rss.gif</url>\n"
-    "</image>\n", ptr);
+    "<url>http://" MYHOSTNAME "/img?rss.gif</url>\n"
+#else
+    "<link>http://" MYHOSTNAME ":%d</link>\n"
+    "<url>http://" MYHOSTNAME ":%d/img?rss.gif</url>\n"
+#endif
+    "</image>\n",
+#if BHTTP_PORT == 80
+    ptr);
+#else
+    ptr, BHTTP_PORT, BHTTP_PORT);
+#endif
 
   /* rss item */
   brd_fpath(folder, brdname, FN_DIR);
   if ((fd = open(folder, O_RDONLY)) >= 0)
   {
-    int i, end;
+    int fsize;
+    struct stat st;
 
-    i = rec_num(folder, sizeof(HDR));
-    if (i > 20)
-      end = i - 20;
-    else
-      end = 0;
-    lseek(fd, (off_t) (-256), SEEK_END);
-    for (; i > end && read(fd, &hdr, sizeof(HDR)) == sizeof(HDR); --i)
+    if (!fstat(fd, &st) && (fsize = st.st_size) >= sizeof(HDR))
     {
-      ptr = Gtime(&hdr.chrono);
-      ptr[4] = '\0';
-      fprintf(fpw, "<!-- %d --><item><title>%s</title>"
-	"<link>http://" MYHOSTNAME "/bmore?%s&amp;%d</link>"
-	"<author>%s</author>"
-	"<pubDate>%s ",
-	hdr.chrono, str_html(hdr.title, TTLEN),
-	brdname, i,
-	hdr.owner,
-	ptr);
-      ptr += 5;
-      if (*ptr == '0')
-	++ptr;
-      fprintf(fpw, "%s</pubDate></item>\n", ptr);
-      lseek(fd, (off_t) (-512), SEEK_CUR);
+      int i, end;
+
+      /* 只列出最後二十篇 */
+      if (fsize > 20 * sizeof(HDR))
+	end = fsize - 20 * sizeof(HDR);
+      else
+	end = 0;
+      i = fsize / sizeof(HDR);
+
+      while ((fsize -= sizeof(HDR)) >= end)
+      {
+	lseek(fd, fsize, SEEK_SET);
+	read(fd, &hdr, sizeof(HDR));
+
+	ptr = Gtime(&hdr.chrono);
+	ptr[4] = '\0';
+	fprintf(fpw, "<!-- %d --><item><title>%s</title>"
+#if BHTTP_PORT == 80
+	  "<link>http://" MYHOSTNAME "/bmore?%s&amp;%d</link>"
+#else
+	  "<link>http://" MYHOSTNAME ":%d/bmore?%s&amp;%d</link>"
+#endif
+	  "<author>%s</author>"
+	  "<pubDate>%s ",
+	  hdr.chrono, str_html(hdr.title, TTLEN),
+#if BHTTP_PORT != 80
+	  BHTTP_PORT,
+#endif
+	  brdname, i,
+	  hdr.owner,
+	  ptr);
+	ptr += 5;
+	if (*ptr == '0')
+	  ptr++;
+	fprintf(fpw, "%s</pubDate></item>\n", ptr);
+
+	i--;
+      }
     }
     close(fd);
   }
@@ -3033,6 +3083,27 @@ cmd_rss(ap)
 
   return HS_OK;
 }
+
+
+  /* --------------------------------------------------- */
+  /* Robot Exclusion					 */
+  /* --------------------------------------------------- */
+
+#ifdef ROBOT_EXCLUSION
+static int
+cmd_robots(ap)
+  Agent *ap;
+{
+  FILE *fpw = out_http(ap, HS_OK, NULL);
+
+  fprintf(fpw, "Content-Length: 28\r\n");	/* robots.txt 的長度 */
+  fprintf(fpw, "Last-Modified: Sat, 01 Jan 2000 00:02:21 GMT\r\n\r\n");	/* 隨便給個時間 */
+
+  fprintf(fpw, "User-agent: *\r\nDisallow: /\r\n");
+      
+  return HS_OK;        
+}
+#endif
 
 
   /* --------------------------------------------------- */
@@ -3053,6 +3124,7 @@ mainpage_neck(fpw, userid, logined)
     logined ? userid : "",
     logined ? "，" : "");
 }
+
 
 static int
 cmd_mainpage(ap)
@@ -3089,36 +3161,42 @@ cmd_mainpage(ap)
 
 static Command cmd_table_get[] =
 {
-  cmd_userlist,   "usrlist", 7,
-  cmd_boardlist,  "brdlist", 7,
-  cmd_favorlist,  "fvrlist", 7,
+  cmd_userlist,    "usrlist",   7,
+  cmd_boardlist,   "brdlist",   7,
+  cmd_favorlist,   "fvrlist",   7,
+  cmd_class,       "class",     5,
 
-  cmd_postlist,   "brd",     3,
-  cmd_gemlist,    "gem",     3,
-  cmd_mboxlist,   "mbox",    4,
+  cmd_postlist,    "brd",       3,
+  cmd_gemlist,     "gem",       3,
+  cmd_mboxlist,    "mbox",      4,
 
-  cmd_brdmore,    "bmore",   5,
-  cmd_brdmost,    "bmost",   5,
-  cmd_gemmore,    "gmore",   5,
-  cmd_mboxmore,   "mmore",   5,
+  cmd_brdmore,     "bmore",     5,
+  cmd_brdmost,     "bmost",     5,
+  cmd_gemmore,     "gmore",     5,
+  cmd_mboxmore,    "mmore",     5,
 
-  cmd_dopost,     "dopost",  6,
-  cmd_domail,     "domail",  6,
+  cmd_dopost,      "dopost",    6,
+  cmd_domail,      "domail",    6,
 
-  cmd_delpost,    "delpost", 7,
-  cmd_predelpost, "dpost",   5,
-  cmd_delmail,    "delmail", 7,
-  cmd_predelmail, "dmail",   5,
-  cmd_markpost,   "mpost",   5,
-  cmd_markmail,   "mmail",   5,
+  cmd_delpost,     "delpost",   7,
+  cmd_predelpost,  "dpost",     5,
+  cmd_delmail,     "delmail",   7,
+  cmd_predelmail,  "dmail",     5,
+  cmd_markpost,    "mpost",     5,
+  cmd_markmail,    "mmail",     5,
 
-  cmd_query,      "query",   5,
+  cmd_query,       "query",     5,
 
-  cmd_image,      "img/",    4,
-  cmd_class,      "class",   5,
-  cmd_rss,        "rss",     3,
+  cmd_image,       "img",       3,
+  cmd_rss,         "rss",       3,
 
-  cmd_mainpage,   NULL,      0
+#ifdef ROBOT_EXCLUSION
+  cmd_robots,      "robots.txt",9,
+#endif
+
+  cmd_mainpage,    "",          0,
+
+  NULL,            NULL,        0
 };
 
 
@@ -3134,8 +3212,7 @@ getfromhost(pip)
 
   if (hp = gethostbyaddr((char *)pip, 4, AF_INET))
     return hp->h_name;
-  else
-    return inet_ntoa(*(struct in_addr *) pip);
+  return inet_ntoa(*(struct in_addr *) pip);
 }
 
 
@@ -3152,7 +3229,7 @@ cmd_login(ap)
   ACCT acct;
 
   /* u=userid&p=passwd */
-  if (!arg_analyze(2, ap->urlp, &userid, &passwd, NULL, NULL))
+  if (!arg_analyze(2, 0, ap->urlp, &userid, &passwd, NULL, NULL))
     return HS_ERROR;
 
   userid += 2;			/* skip "u=" */
@@ -3206,14 +3283,13 @@ cmd_addpost(ap)
   HDR hdr;
   BRD *brd;
   FILE *fp;
-
-  out_head(ap, "文章發表");
+  FILE *fpw = out_head(ap, "文章發表");
 
   if (!acct_fetch(ap))
     return HS_ERR_LOGIN;
 
   /* b=brdname&t=title&c=content&end= */
-  if (arg_analyze(4, ap->urlp, &brdname, &title, &content, &end))
+  if (arg_analyze(4, 0, ap->urlp, &brdname, &title, &content, &end))
   {
     brdname += 2;		/* skip "b=" */
     title += 2;			/* skip "t=" */
@@ -3239,19 +3315,26 @@ cmd_addpost(ap)
 	hdr.xmode = (brd->battr & BRD_NOTRAN) ? 0 : POST_OUTGO;
 	strcpy(hdr.owner, ap->userid);
 	strcpy(hdr.nick, ap->username);
-	rec_bot(folder, &hdr, sizeof(HDR));
+
+  /* wakefield.081212: 移除原本置底 */
+  /*
+  rec_bot(folder, &hdr, sizeof(HDR));
+  */
+  rec_add(folder, &hdr, sizeof(HDR));
 
 	brd->btime = -1;
 	if (hdr.xmode & POST_OUTGO)
 	  outgo_post(&hdr, brdname);
 
-	out_reload(ap->fpw, "您的文章發表成功\");
+	out_reload(fpw, "您的文章發表成功\");
 	return HS_OK;
       }
       return HS_ERR_BOARD;
     }
   }
-  return HS_ERROR;
+
+  out_reload(fpw, "您的文章發表失敗");
+  return HS_OK;
 }
 
 
@@ -3267,11 +3350,10 @@ cmd_addmail(ap)
   char folder[64], fpath[64];
   HDR hdr;
   FILE *fp;
-
-  out_head(ap, "信件發送");
+  FILE *fpw = out_head(ap, "信件發送");
 
   /* u=userid&t=title&c=content&end= */
-  if (arg_analyze(4, ap->urlp, &userid, &title, &content, &end))
+  if (arg_analyze(4, 0, ap->urlp, &userid, &title, &content, &end))
   {
     userid += 2;		/* skip "u=" */
     title += 2;			/* skip "t=" */
@@ -3297,13 +3379,13 @@ cmd_addmail(ap)
 	strcpy(hdr.nick, ap->username);
 	rec_add(folder, &hdr, sizeof(HDR));
 
-	out_reload(ap->fpw, "您的信件發送成功\");
+	out_reload(fpw, "您的信件發送成功\");
 	return HS_OK;
       }
     }
   }
 
-  out_reload(ap->fpw, "您的信件發送失敗，也許\是因為您尚未登入或是查無此使用者");
+  out_reload(fpw, "您的信件發送失敗，也許\是因為您尚未登入或是查無此使用者");
   return HS_OK;
 }
 
@@ -3318,7 +3400,7 @@ static Command cmd_table_post[] =
   cmd_addpost,  "dopost=&", 8,
   cmd_addmail,  "domail=&", 8,
 
-  cmd_mainpage,  NULL,      0
+  NULL,         NULL,       0
 };
 
 
@@ -3342,7 +3424,8 @@ agent_fire(ap)
     close(csock);
   }
 
-  free(ap->data);
+  if (ap->data)
+    free(ap->data);
 }
 
 
@@ -3350,12 +3433,110 @@ agent_fire(ap)
 /* receive request from client				 */
 /* ----------------------------------------------------- */
 
+static int		/* >=0:mode -1:結束 */
+do_cmd(ap, str, end, mode)
+  Agent *ap;
+  uschar *str, *end;		/* command line 的開頭和結尾 */
+  int mode;
+{
+  int code;
+  char *ptr;
+
+  if (!(mode & (AM_GET | AM_POST)))
+  {
+    if (!str_ncmp(str, "GET ", 4))		/* str 格式為 GET /index.htm HTTP/1.0 */
+    {
+      mode ^= AM_GET;
+      str += 4;
+
+      if (*str != '/')
+      {
+	out_error(ap, HS_BADREQUEST);
+	return -1;
+      }
+
+      if (ptr = strchr(str, ' '))
+      {
+	*ptr = '\0';
+	str_ncpy(ap->url, str + 1, sizeof(ap->url));
+      }
+      else
+      {
+	*ap->url = '\0';
+      }
+    }
+    else if (!str_ncmp(str, "POST ", 5))	/* str 格式為 POST /dopost?sysop HTTP/1.0 */
+    {
+      mode ^= AM_POST;
+    }
+  }
+  else
+  {
+    if (*str)		/* 不是空行：檔頭 */
+    {
+      /* 分析 Cookie */
+      if (!str_ncmp(str, "Cookie: user=", 13))
+	str_ncpy(ap->cookie, str + 13, LEN_COOKIE);
+
+      /* 分析 If-Modified-Since */
+      if ((mode & AM_GET) && !str_ncmp(str, "If-Modified-Since: ", 19))	/* str 格式為 If-Modified-Since: Sat, 29 Oct 1994 19:43:31 GMT */
+	str_ncpy(ap->modified, str + 19, sizeof(ap->modified));
+    }
+    else		/* 空行 */
+    {
+      Command *cmd;
+      char *url;
+
+      if (mode & AM_GET)
+      {
+	cmd = cmd_table_get;
+	url = ap->url;
+      }
+      else /* if (mode & AM_POST) */
+      {
+	cmd = cmd_table_post;
+	/* 在 AM_POST 時，空行的下一行是 POST 的內容 */
+	for (url = end + 1; *url == '\r' || *url == '\n'; url++)	/* 找下一行 */
+	  ;
+      }
+
+      for (; ptr = cmd->cmd; cmd++)
+      {
+	if (!str_ncmp(url, ptr, cmd->len))
+	  break;
+      }
+
+      /* 如果在 command_table 裡面找不到，那麼自動重新導向 */
+      if (!ptr)
+      {
+	out_http(ap, HS_REDIRECT, NULL);
+	return -1;
+      }
+
+      ap->urlp = url + cmd->len;
+
+      code = (*cmd->func) (ap);
+      if (code != HS_OK)
+      {
+	if (code != HS_END)
+	  out_error(ap, code);
+	if (code < HS_OK)
+	  out_tail(ap->fpw);
+      }
+      return -1;
+    }
+  }
+
+  return mode;
+}
+
+
 static int
 agent_recv(ap)
   Agent *ap;
 {
   int cc, mode, size, used;
-  uschar *data, *head, *ptr;
+  uschar *data, *head;
 
   used = ap->used;
   data = ap->data;
@@ -3380,13 +3561,17 @@ agent_recv(ap)
 	}
 	else
 	{
-	  fprintf(flog, "ERROR\tmalloc: %d\n", size);
+#ifdef LOG_VERBOSE
+	  fprintf(flog, "ERROR\trealloc: %d\n", size);
+#endif
 	  return 0;
 	}
       }
       else
       {
-	fprintf(flog, "ERROR\tdata too long\n");
+#ifdef LOG_VERBOSE
+	fprintf(flog, "WARN\tdata too long\n");
+#endif
 	return 0;
       }
     }
@@ -3435,127 +3620,12 @@ agent_recv(ap)
     {
       *head = '\0';
 
-      if (!(mode & (AM_GET | AM_POST)))
+      if ((mode = do_cmd(ap, data, head, mode)) < 0)
       {
-	if (!str_ncmp(data, "GET ", 4))
-	{
-	  mode ^= AM_GET;
-	  data += 4;
-	  if (*data != '/')
-	  {
-	    out_error(ap, HS_BADREQUEST);
-	    fflush(ap->fpw);
-	    return 0;
-	  }
-	  if (ptr = strchr(data, ' '))
-	  {
-	    *ptr = '\0';
-	    str_ncpy(ap->url, data + 1, sizeof(ap->url));
-	  }
-	  else
-	  {
-	    *ap->url = '\0';
-	  }
-	}
-	else if (!str_ncmp(data, "POST ", 5))
-	{
-	  mode ^= AM_POST;
-	}
+	fflush(ap->fpw);	/* do_cmd() 回傳 -1 表示結束，就 fflush 所有結果 */
+	return 0;
       }
-      else
-      {
-	if (*data)		/* 不是空行：檔頭 */
-	{
-	  /* 分析Cookie */
-	  if (!str_ncmp(data, "Cookie: user=", 13))
-	  {
-	    str_ncpy(ap->cookie, data + 13, LEN_COOKIE);
-	  }
-	  /* 分析檔案時間 */
-	  if ((mode & AM_GET) && !str_ncmp(data, "If-Modified-Since: ", 19))
-	  {
-	    ap->modified = data + 19;
-	    data[48] = '\0';
-	  }
-	}
-	else			/* 空行：下一行為內容 */
-	{
-	  Command *cmd;
-	  char *url;
 
-	  if (mode & AM_GET)
-	  {
-	    cmd = cmd_table_get;
-	    url = ap->url;
-	  }
-	  else
-	  {
-	    cmd = cmd_table_post;
-	    for (url = head + 1; cc = *url; ++url)	/* 找開頭(簡化只判斷>'9') */
-	    {
-	      if (cc != '\0' && cc > '9')
-		break;
-	    }
-	  }
-	  for (; ptr = cmd->cmd; cmd++)
-	  {
-	    if (!str_ncmp(url, ptr, cmd->len))
-	      break;
-	  }
-	  cc = cmd->len;
-
-	  /* 處理自動重新導向 */
-	  if (mode & AM_GET)
-	  {
-	    if (ptr)
-	    {
-	      if (ptr[cc - 1] == '/')
-		goto noredirect;
-	      if (ptr[cc] == '/')
-	      {
-		if (url[cc] == '/')
-		{
-		  cc++;
-		  goto noredirect;
-		}
-	      }
-	      else if (!url[cc])
-	      {
-		goto noredirect;
-	      }
-	      else if (url[cc] == '?')
-	      {
-		cc++;
-		goto noredirect;
-	      }
-	      else if (url[cc] != '/')
-	      {
-		ptr = NULL;
-	      }
-	    }
-	    else if (!*url)
-	    {
-	      goto noredirect;
-	    }
-
-	    out_http(ap, HS_REDIRECT, ptr);
-	    fflush(ap->fpw);
-	    return 0;
-	  }
-      noredirect:
-	  ap->urlp = url + cc;
-	  cc = (*cmd->func) (ap);
-	  if (cc != HS_OK)
-	  {
-	    if (cc != HS_END)
-	      out_error(ap, cc);
-	    if (cc < HS_OK)
-	      out_tail(ap->fpw);
-	  }
-	  fflush(ap->fpw);
-	  return 0;
-	}
-      }
       data = head + 1;
     }
     head++;
@@ -3589,7 +3659,7 @@ agent_accept(ipaddr)
     if (csock != EINTR)
     {
 #ifdef LOG_VERBOSE
-      logit("ACCEPT", strerror(csock));
+      fprintf(flog, "ACCEPT\t%s\n", strerror(csock));
 #endif
       return -1;
     }
@@ -3687,8 +3757,8 @@ servo_signal()
   sigemptyset(&act.sa_mask);
   act.sa_flags = 0;
 
-  act.sa_handler = sig_term;		/* forced termination */
-  sigaction(SIGTERM, &act, NULL);
+  act.sa_handler = sig_term;
+  sigaction(SIGTERM, &act, NULL);	/* forced termination */
   sigaction(SIGSEGV, &act, NULL);	/* if rlimit violate */
   sigaction(SIGBUS, &act, NULL);
 
@@ -3872,6 +3942,8 @@ main(argc, argv)
   init_ushm();
   init_fshm();
 
+  guest_userno();
+
   servo_signal();
 
   log_open();
@@ -3950,8 +4022,6 @@ main(argc, argv)
 
       FD_SET(sock, &rset);
     }
-    if (n < 0)		/* no active agent and ready to die */
-      break;
 
     /* in order to maintain history, timeout every BHTTP_PERIOD seconds in case no connections */
     tv.tv_sec = BHTTP_PERIOD;
@@ -4004,12 +4074,27 @@ main(argc, argv)
       sock = agent_accept(&ip_addr);
       if (sock > 0)
       {
-	if (agent = Mulder)
-	  Mulder = agent->anext;
-	else
-	  agent = (Agent *) malloc(sizeof(Agent));
+	Agent *anext;
 
-	*FBI = agent;
+	if (agent = Mulder)
+	{
+	  anext = agent->anext;
+	}
+	else
+	{
+	  if (!(agent = (Agent *) malloc(sizeof(Agent))))
+	  {
+	    fcntl(sock, F_SETFL, M_NONBLOCK);
+	    shutdown(sock, 2);
+	    close(sock);
+
+#ifdef LOG_VERBOSE
+	    fprintf(flog, "ERROR\tNot enough space in main()\n");
+#endif
+	    continue;
+	  }
+	  anext = NULL;
+	}
 
 	/* variable initialization */
 
@@ -4020,11 +4105,21 @@ main(argc, argv)
 
 	agent->ip_addr = ip_addr;
 
-	agent->data = (char *) malloc(MIN_DATA_SIZE);
+	if (!(agent->data = (char *) malloc(MIN_DATA_SIZE)))
+	{
+	  agent_fire(agent);
+#ifdef LOG_VERBOSE
+	  fprintf(flog, "ERROR\tNot enough space in agent->data\n");
+#endif
+	  continue;
+	}
 	agent->size = MIN_DATA_SIZE;
 	agent->used = 0;
 
 	agent->fpw = fdopen(sock, "w");
+
+	Mulder = anext;
+	*FBI = agent;
       }
     }
 

@@ -270,7 +270,12 @@ keeplog(fnlog, board, title, mode)
 
   strcpy(hdr.title, title);
   strcpy(hdr.owner, STR_SYSOP);
+
+  /* wakefield.081212: 移除原本置底 */
+  /*
   rec_bot(folder, &hdr, sizeof(HDR));
+  */
+  rec_add(folder, &hdr, sizeof(HDR));
 
   update_btime(board);
 }
@@ -907,8 +912,8 @@ draw_usies(ptime)
   }
 
   /* Thor.990329: y2k */
-  fprintf(fp, "\t\t\t   \033[1;33;46m [%02d/%02d/%02d] 上站人次統計 \033[40m\n",
-    ptime->tm_year % 100, ptime->tm_mon + 1, ptime->tm_mday);
+  fprintf(fp, "%24s\033[1;33;46m [%02d/%02d/%02d] 上站人次統計 \033[40m\n",
+    "", ptime->tm_year % 100, ptime->tm_mon + 1, ptime->tm_mday);
 
   for (i = MAX_LINE + 1; i > 0; i--)
   {
@@ -941,7 +946,7 @@ draw_usies(ptime)
   fprintf(fp, "\033[34m"
     "  ╒═══════════════════════════════════╕\n  \033[32m"
     "0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23\n\n"
-    "\t%s\t\033[35m總共上站人次：\033[37m%-9d\033[35m平均使用時間：\033[37m%d\033[m\n",
+    "        %s     \033[35m總共上站人次：\033[37m%-9d\033[35m平均使用時間：\033[37m%d\033[m\n",
     over ? "\033[35m單位：\033[37m10 人" : "", total, act[24] / act[25] + 1);
   fclose(fp);
 }
@@ -1134,11 +1139,6 @@ main(argc, argv)
     {
       sprintf(title, "%s本週熱門話題", date);
       keeplog("gem/@/@-week", NULL, title, 0);
-
-#ifdef LOG_ADMIN
-      sprintf(title, "%s站長修改權限", date);
-      keeplog(FN_RUN_PERM, BN_SECURITY, title, 2);
-#endif
 
       sprintf(title, "%s偷懶板主統計", date);
       keeplog(FN_RUN_LAZYBM, BN_SECURITY, title, 2);

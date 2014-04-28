@@ -27,6 +27,32 @@ static int cur_pos;			/* current position with ANSI codes */
 
 
 /* ----------------------------------------------------- */
+/* 漢字 (zh-char) 判斷					 */
+/* ----------------------------------------------------- */
+
+
+int			/* 1:是 0:不是 */
+is_zhc_low(str, n)	/* hightman.060504: 判斷字串中的第 n 個字符是否為漢字的後半字 */
+  char *str;
+  int n;
+{
+  char *end;
+
+  end = str + n;
+  while (str < end)
+  {
+    if (!*str)
+      return 0;
+    if (IS_ZHC_HI(*str))
+      str++;
+    str++;
+  }
+
+  return (str - end);
+}
+
+
+/* ----------------------------------------------------- */
 /* output routines					 */
 /* ----------------------------------------------------- */
 
@@ -168,10 +194,12 @@ move(x, y)
 {
   screenline *cslp;
 
+  /* itoc.070517.註解: 畫面大小是 (b_lines+1)*(b_cols+1)，允許的座標 (x,y) 範圍是 x=0~b_lines、y=0~b_cols */
+
   if (x > b_lines)
     return;
 
-  if (y >= b_cols)
+  if (y > b_cols)
     y = 0;
 
   cur_row = x;
@@ -285,7 +313,7 @@ rel_move(new_col, new_row)
   int was_col, was_row;
   char buf[16];
 
-  if (new_row > b_lines || new_col >= b_cols)
+  if (new_row > b_lines || new_col > b_cols)
     return;
 
   was_col = tc_col;
@@ -559,7 +587,10 @@ clear()
   cur_slp = slp = vbuf;
   while (i++ <= b_lines)
   {
-    memset(slp++, 0, 9);
+    /* memset(slp, 0, sizeof(screenline)); */
+    /* 只需 slp->data[0] = '\0' 即可，不需清整個 ANSILINELEN */
+    memset(slp, 0, sizeof(screenline) - ANSILINELEN + 1);
+    slp++;
   }
 }
 
@@ -577,7 +608,8 @@ clrtoeol()	/* clear screen to end of line (列尾) */
   }
   else
   {
-    memset((char *) slp + 1, 0, 8);
+    /* 清掉 oldlen 以後的全部；data 只需清首 byte 即可 */
+    memset((char *) slp + sizeof(slp->oldlen), 0, sizeof(screenline) - ANSILINELEN + 1 - sizeof(slp->oldlen));
   }
 }
 
@@ -598,7 +630,8 @@ clrtobot()	/* clear screen to bottom (螢幕底部) */
       j = 0;
       slp = vbuf;
     }
-    memset((char *) slp + 1, 0, 8);
+    /* 清掉 oldlen 以後的全部；data 只需清首 byte 即可 */
+    memset((char *) slp + sizeof(slp->oldlen), 0, sizeof(screenline) - ANSILINELEN + 1 - sizeof(slp->oldlen));
 
     i++;
     j++;
@@ -646,7 +679,8 @@ new_line:
     }
     else
     {
-      memset((char *) slp + 1, 0, 8);
+      /* 清掉 oldlen 以後的全部；data 只需清首 byte 即可 */
+      memset((char *) slp + sizeof(slp->oldlen), 0, sizeof(screenline) - ANSILINELEN + 1 - sizeof(slp->oldlen));
     }
 
     move(cur_row + 1, 0);
@@ -738,7 +772,7 @@ new_line:
   cur_pos = ++pos;
   cy = ++cur_col;
 
-  if ((pos >= ANSILINELEN) /* || (cy >= b_cols) */ )
+  if ((pos >= ANSILINELEN) /* || (cy > b_cols) */ )
     goto new_line;
 
   if (slp->width < cy)
@@ -897,7 +931,7 @@ save_foot(slp)
     move(lines[i], 0);
     memcpy(slp + i, cur_slp, sizeof(screenline));
     slp[i].smod = 0;
-    slp[i].emod = ANSILINELEN;	/* Thor.990125:不論最後一次改到哪, 全部要繪上 */
+    slp[i].emod = ANSILINELEN;	/* Thor.990125: 不論最後一次改到哪, 全部要繪上 */
     slp[i].oldlen = ANSILINELEN;
     slp[i].mode |= SL_MODIFIED;
   }
@@ -1110,11 +1144,35 @@ static int vi_size;
 static int vi_head;
 
 
-/* static int vio_fd; */
-int vio_fd;			/* Thor.980725: 為以後在talk & chat 進 ^z 作準備 */
+static int vio_fd;
+
 
 #ifdef EVERY_Z
-int holdon_fd;			/* Thor.980727: 跳出chat&talk暫存vio_fd用 */
+
+static int holdon_fd;		 /* Thor.980727: 跳出chat&talk暫存vio_fd用 */
+
+
+void
+vio_save()
+{
+  holdon_fd = vio_fd;
+  vio_fd = 0;
+}
+
+
+void
+vio_restore()
+{
+  vio_fd = holdon_fd;
+  holdon_fd = 0;
+}
+
+
+int
+vio_holdon()
+{
+  return holdon_fd;
+}
 #endif
 
 
@@ -1417,15 +1475,18 @@ vget_match(prefix, len, op)
   int op;
 {
   char *data, *hit;
+  char newprefix[BNLEN + 1];	/* 繼續補完的板名 */
   int row, col, match;
+  int rlen;			/* 可補完的剩餘長度 */
 
   row = 3;
-  col = match = 0;
+  col = match = rlen = 0;
 
   if (op & GET_BRD)
   {
     usint perm;
-    char *bits;
+    int i;
+    char *bits, *n, *b;
     BRD *head, *tail;
 
     extern BCACHE *bshm;
@@ -1460,13 +1521,29 @@ vget_match(prefix, len, op)
 	  continue;
 
 	if (match == 1)
+	{
 	  match_title();
+	  if (data[len])
+	  {
+	    strcpy(newprefix, data);
+	    rlen = strlen(data + len);
+	  }
+	}
+	else if (rlen)	/* LHD.051014: 還有可補完的餘地 */
+	{
+	  n = newprefix + len;
+	  b = data + len;
+	  for (i = 0; i < rlen && ((*n | 0x20) == (*b | 0x20)); i++, n++, b++)
+	    ;
+	  *n = '\0';
+	  rlen = i;
+	}
 
 	move(row, col);
 	outs(data);
 
 	col += BNLEN + 1;
-	if (col > b_cols - BNLEN - 1)	/* 總共可以放 b_cols / (BNLEN + 1) 欄 */
+	if (col > b_cols + 1 - BNLEN - 1)	/* 總共可以放 (b_cols + 1) / (BNLEN + 1) 欄 */
 	{
 	  col = 0;
 	  if (++row >= b_lines)
@@ -1516,7 +1593,7 @@ vget_match(prefix, len, op)
       outs(data);
 
       col += IDLEN + 1;
-      if (col > b_cols - IDLEN - 1)	/* 總共可以放 b_cols / (IDLEN + 1) 欄 */
+      if (col > b_cols + 1 - IDLEN - 1)	/* 總共可以放 (b_cols + 1) / (IDLEN + 1) 欄 */
       {
 	col = 0;
 	if (++row >= b_lines)
@@ -1561,7 +1638,7 @@ vget_match(prefix, len, op)
       outs(data);
 
       col += IDLEN + 1;
-      if (col > b_cols - IDLEN - 1)	/* 總共可以放 b_cols / (IDLEN + 1) 欄 */
+      if (col > b_cols + 1 - IDLEN - 1)	/* 總共可以放 (b_cols + 1) / (IDLEN + 1) 欄 */
       {
 	col = 0;
 	if (++row >= b_lines)
@@ -1579,6 +1656,11 @@ vget_match(prefix, len, op)
     strcpy(prefix, hit);
     return strlen(hit);
   }
+  else if (rlen)
+  {
+    strcpy(prefix, newprefix);
+    return len + rlen;
+  }
 
   return 0;
 }
@@ -1587,7 +1669,7 @@ vget_match(prefix, len, op)
 char lastcmd[MAXLASTCMD][80];
 
 
-/* bbs.h: Flags to getdata input function */
+/* Flags to getdata input function */
 /* NOECHO  0x0000  不顯示，用於密碼取得 */
 /* DOECHO  0x0100  一般顯示 */
 /* LCECHO  0x0200  low case echo，換成小寫 */
@@ -1716,13 +1798,8 @@ vget(line, col, prompt, data, max, echo)
     }
 
     /* ----------------------------------------------- */
-    /* 輸入 password / match-list 時只能按 BackSpace   */
+    /* 輸入 password 時只能按 BackSpace		       */
     /* ----------------------------------------------- */
-
-#if 0
-    if ((!echo || mfunc) && ch != KEY_BKSP)
-      continue;
-#endif
 
     if (!echo && ch != KEY_BKSP)
       continue;
@@ -1745,16 +1822,27 @@ vget(line, col, prompt, data, max, echo)
       /* remove data and display it			 */
       /* ----------------------------------------------- */
 
-      i = col--;
       len--;
-      move(x, y + col);
-      while (i <= len)
+      col--;
+#ifdef HAVE_MULTI_BYTE
+      /* hightman.060504: 判斷現在刪除的位置是否為漢字的後半段，若是刪二字元 */
+      if ((cuser.ufo & UFO_ZHC) && echo && col && IS_ZHC_LO(data, col))
       {
-	data[i - 1] = ch = data[i];
-	outc(echo ? ch : '*');
-	i++;
+	len--;
+	col--;
+	next = 2;
       }
-      outc(' ');
+      else
+#endif
+	next = 1;
+      move(x, y + col);
+      for (i = col; i < len; i++)
+      {
+	data[i] = ch = data[i + next];
+	outc(echo ? ch : '*');
+      }
+      while (next--)
+	outc(' ');
       break;
 
     case KEY_DEL:
@@ -1766,27 +1854,50 @@ vget(line, col, prompt, data, max, echo)
       /* remove data and display it			 */
       /* ----------------------------------------------- */
 
-      i = col;
       len--;
-      while (i < len)
+#ifdef HAVE_MULTI_BYTE
+      /* hightman.060504: 判斷現在刪除的位置是否為漢字的前半段，若是刪二字元 */
+      if ((cuser.ufo & UFO_ZHC) && col < len && IS_ZHC_HI(data[col]))
       {
-	data[i] = ch = data[i + 1];
-	outc(echo ? ch : '*');
-	i++;
+	len--;
+	next = 2;
       }
-      outc(' ');
+      else
+#endif
+	next = 1;
+      for (i = col; i < len; i++)
+      {
+	data[i] = ch = data[i + next];
+	outc(ch);
+      }
+      while (next--)
+	outc(' ');
       break;
 
     case KEY_LEFT:
     case Ctrl('B'):
       if (col)
-	--col;
+      {
+	col--;
+#ifdef HAVE_MULTI_BYTE
+	/* hightman.060504: 左移時碰到漢字移雙格 */
+	if ((cuser.ufo & UFO_ZHC) && col && IS_ZHC_LO(data, col))
+	  col--;
+#endif
+      }
       break;
 
     case KEY_RIGHT:
     case Ctrl('F'):
       if (col < len)
-	++col;
+      {
+	col++;
+#ifdef HAVE_MULTI_BYTE
+	/* hightman.060504: 右移時碰到漢字移雙格 */
+	if ((cuser.ufo & UFO_ZHC) && col < len && IS_ZHC_HI(data[col - 1]))
+	  col++;
+#endif
+      }
       break;
 
     case KEY_HOME:
@@ -1870,7 +1981,7 @@ vget(line, col, prompt, data, max, echo)
     }
   }
 
-  if (len > 2 && echo)
+  if (len >= 2 && echo)
   {
     for (line = MAXLASTCMD - 1; line; line--)
       strcpy(lastcmd[line], lastcmd[line - 1]);
@@ -1882,7 +1993,7 @@ vget(line, col, prompt, data, max, echo)
 
   ch = data[0];
   if ((echo & LCECHO) && (ch >= 'A' && ch <= 'Z'))
-    data[0] = (ch += 32);
+    data[0] = (ch |= 0x20);
 
   return ch;
 }

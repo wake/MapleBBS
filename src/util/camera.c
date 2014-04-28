@@ -28,94 +28,146 @@ static char *list[] = 		/* src/include/struct.h */
   "newuser",			/* FILM_NEWUSER  */
   "tryout",			/* FILM_TRYOUT   */
   "post",			/* FILM_POST     */
+  "welcome",			/* FILM_WELCOME  */ /* 041125.Lacool: 進站畫面 */
+  "announce",       /* FILM_ANNOUNCE */ /* wake.080603: 進站新聞列 */
   NULL				/* FILM_MOVIE    */
 };
 
 
-static FCACHE image;
-static int number;
-static int tail;
-
-
-static int		/* 1:成功 0:已超過容量 */
-play(data, movie, size)
-  char *data;
-  int movie;
+static void
+str_strip(str, size)		/* itoc.060417: 將動態看板每列的寬度掐在 SCR_WIDTH */
+  char *str;
   int size;
 {
-  int line, ch;
-  char *head;
+  int ch, ansi, len;
+  char *ptr;
+  const char *strip = "\033[m\n";
 
-  head = data;
+  /* 若動態看板有一列的寬度超過 SCR_WIDTH，會顯示二列，造成排版錯誤 (主要是點歌的部分)
+     所以就乾脆把超過 SCR_WIDTH 的部分刪除 (在此不考慮寬螢幕) */
+  /* 若本列中有 \033*s 或 \033*n，顯示出來會更長，所以要特別處理 */
 
-  if (movie)		/* 動態看板，要限制行數 */
+  ansi = len = 0;
+  ptr = str;
+  while (ch = *ptr++)
   {
-    line = 0;
-    while (ch = *data)		/* at most MOVIE_LINES lines */
+    if (ch == '\n')
     {
-      data++;
-      if (ch == '\n')
+      break;
+    }
+    else if (ch == '\033')
+    {
+      ansi = 1;
+    }
+    else if (ansi)
+    {
+      if (ch == '*')	/* KEY_ESC + * + s/n 秀出 ID/username，考慮最大長度 */
       {
-	if (++line >= MOVIE_LINES)
+	ansi = 0;
+	len += BMAX(IDLEN, UNLEN) - 1;
+	if (len > SCR_WIDTH)
+	{
+	  if (ptr - 1 + strlen(strip) < str + size)	/* 避免 overflow */
+	    strcpy(ptr - 1, strip);
+	  else
+	    strcpy(ptr - 1, "\n");
 	  break;
+	}
+      }
+      else if ((ch < '0' || ch > '9') && ch != ';' && ch != '[')
+	ansi = 0;
+    }
+    else
+    {
+      if (++len > SCR_WIDTH)
+      {
+	if (ptr - 1 + strlen(strip) < str + size)	/* 避免 overflow */
+	  strcpy(ptr - 1, strip);
+	else
+	  strcpy(ptr - 1, "\n");
+	break;
       }
     }
-
-    while (line < MOVIE_LINES)	/* at lease MOVIE_LINES lines */
-    {
-      *data++ = '\n';
-      line++;
-    }
-
-    *data = '\0';
-    size = data - head;
   }
-
-  ch = size + 1;	/* Thor.980804: +1 將結尾的 '\0' 也算入 */
-
-  line = tail + ch;
-  if (line >= MOVIE_SIZE)	/* 若加入這篇會超過全部容量，則不 mirror */
-    return 0;
-
-  data = image.film + tail;
-  memcpy(data, head, ch);
-  image.shot[++number] = tail = line;
-  return 1;
 }
 
 
-static int		/* 1:成功 0:已超過篇數 */
-mirror(fpath, movie)
+static FCACHE image;
+static int number;	/* 目前已 mirror 幾篇了 */
+static int total;	/* 目前已 mirror 幾 byte 了 */
+
+
+static int		/* 1:成功 0:已超過篇數或容量 */
+mirror(fpath, line)
   char *fpath;
-  int movie;		/* 0:系統文件，不限制列數  !=0:動態看板，要限制列數 */
+  int line;		/* 0:系統文件，不限制列數  !=0:動態看板，line 列 */
 {
-  int fd, size;
-  char buf[FILM_SIZ + 1];
+  int size, i;
+  char buf[FILM_SIZ];
+  char tmp[ANSILINELEN];
+  struct stat st;
+  FILE *fp;
 
   /* 若已經超過最大篇數，則不再繼續 mirror */
   if (number >= MOVIE_MAX - 1)
     return 0;
 
-  size = 0;
-  if ((fd = open(fpath, O_RDONLY)) >= 0)
+  if (stat(fpath, &st))
+    size = -1;
+  else
+    size = st.st_size;
+
+  if (size > 0 && size < FILM_SIZ && (fp = fopen(fpath, "r")))
   {
-    /* 讀入檔案 */
-    size = read(fd, buf, FILM_SIZ);
-    close(fd);
+    size = i = 0;
+    while (fgets(tmp, ANSILINELEN, fp))
+    {
+      str_strip(tmp, ANSILINELEN);
+
+      strcpy(buf + size, tmp);
+      size += strlen(tmp);
+  
+      if (line)
+      {
+	/* 動態看板，最多 line 列 */
+	if (++i >= line)
+	  break;
+      }
+    }
+    fclose(fp);
+
+    if (i != line)	
+    {
+      /* 動態看板，若不到 line 列，要填滿 line 列 */
+      for (; i < line; i++)
+      {
+	buf[size] = '\n';
+	size++;
+      }
+      buf[size] = '\0';
+    }
   }
 
-  if (size <= 0)
+  if (size <= 0 || size >= FILM_SIZ)
   {
-    if (movie)		/* 如果是 動態看板/點歌 缺檔案，就不 mirror */
+    if (line)		/* 如果是 動態看板/點歌 缺檔案，就不 mirror */
       return 1;
 
-    /* 如果是系統文件缺檔案的話，要補上去 */
-    sprintf(buf, "請告訴站長缺檔案 %s", fpath);
+    /* 如果是系統文件出錯的話，要補上去 */
+    sprintf(buf, "請告訴站長檔案 %s 遺失或是過大", fpath);
     size = strlen(buf);
   }
 
-  buf[size] = '\0';
-  return play(buf, movie, size);
+  size++;	/* Thor.980804: +1 將結尾的 '\0' 也算入 */
+
+  i = total + size;
+  if (i >= MOVIE_SIZE)	/* 若加入這篇會超過全部容量，則不 mirror */
+    return 0;
+
+  memcpy(image.film + total, buf, size);
+  image.shot[++number] = total = i;
+
+  return 1;
 }
 
 
@@ -131,7 +183,7 @@ do_gem(folder)		/* itoc.011105: 把看板/精華區的文章收進 movie */
   {
     while (fread(&hdr, sizeof(HDR), 1, fp) == 1)
     {
-      if (hdr.xmode & (GEM_RESTRICT | GEM_RESERVED | GEM_BOARD))	/* 限制級、看板 不放入 movie 中 */
+      if (hdr.xmode & (GEM_RESTRICT | GEM_RESERVED | GEM_BOARD | GEM_LINE))	/* 限制級、看板、分隔線 不放入 movie 中 */
 	continue;
 
       hdr_fpath(fpath, folder, &hdr);
@@ -142,7 +194,7 @@ do_gem(folder)		/* itoc.011105: 把看板/精華區的文章收進 movie */
       }
       else				/* plain text */
       {
-	if (!mirror(fpath, FILM_MOVIE))
+	if (!mirror(fpath, MOVIE_LINES))
 	  break;
       }
     }
@@ -162,22 +214,28 @@ lunar_calendar(key, now, ptime)	/* itoc.050528: 由陽曆算農曆日期 */
   (1) "," 只是分隔，方便給人閱讀而已
   (2) 前 12 個 byte 分別代表農曆 1-12 月為大月或是小月。"L":大月三十天，"-":小月二十九天
   (3) 第 14 個 byte 代表今年農曆閏月。"X":無閏月，"123456789:;<" 分別代表農曆 1-12 是閏月
-  (4) 第 16-20 個 bytes 代表今年農曆新年是哪天。例如 "02:15" 表示陽曆二月十五日是農曆新年
+  (4) 第 16-20 個 bytes 代表今年農曆新年是哪天。例如 "02/15" 表示陽曆二月十五日是農曆新年
 
 #endif
 
   #define TABLE_INITAIL_YEAR	2005
-  #define TABLE_FINAL_YEAR	2011
+  #define TABLE_FINAL_YEAR	2016
 
+  /* 參考 http://sean.o4u.com/ap/calendar/calendar.htm 而得 */
   char Table[TABLE_FINAL_YEAR - TABLE_INITAIL_YEAR + 1][21] = 
   {
-    "-L-L-LL-L-L-,X,02:09",	/* 2005 雞年 */
-    "L-L-L-L-LL-L,7,01:29",	/* 2006 狗年 */
-    "--L--L-LLL-L,X,02:18",	/* 2007 豬年 */
-    "L--L--L-LL-L,X,02:07",	/* 2008 鼠年 */
-    "LL--L--L-L-L,5,01:26",	/* 2009 牛年 */
-    "L-L-L--L-L-L,X,02:14",	/* 2010 虎年 */
-    "L-LL-L--L-L-,X,02:14",	/* 2011 兔年 */
+    "-L-L-LL-L-L-,X,02/09",	/* 2005 雞年 */
+    "L-L-L-L-LL-L,7,01/29",	/* 2006 狗年 */
+    "--L--L-LLL-L,X,02/18",	/* 2007 豬年 */
+    "L--L--L-LL-L,X,02/07",	/* 2008 鼠年 */
+    "LL--L--L-L-L,5,01/26",	/* 2009 牛年 */
+    "L-L-L--L-L-L,X,02/14",	/* 2010 虎年 */
+    "L-LL-L--L-L-,X,02/03",	/* 2011 兔年 */
+    "L-LLL-L-L-L-,4,01/23",	/* 2012 龍年 */
+    "L-L-LL-L-L-L,X,02/10",	/* 2013 蛇年 */
+    "-L-L-L-LLL-L,9,01/31",	/* 2014 馬年 */
+    "-L--L-LLL-L-,X,02/19",	/* 2015 羊年 */
+    "L-L--L-LL-LL,X,02/08",	/* 2016 猴年 */
   };
 
   char year[21];
@@ -235,17 +293,17 @@ lunar_calendar(key, now, ptime)	/* itoc.050528: 由陽曆算農曆日期 */
 }
 
 
-static void
-do_today(fshm)
-  FCACHE *fshm;
+static char *
+do_today()
 {
   FILE *fp;
-  char buf[80], *str, *today;
+  char buf[80], *ptr1, *ptr2, *ptr3, *today;
   char key1[6];			/* mm/dd: 陽曆 mm月dd日 */
   char key2[6];			/* mm/#A: 陽曆 mm月的第#個星期A */
   char key3[6];			/* MM\DD: 農曆 MM月DD日 */
   time_t now;
   struct tm *ptime;
+  static char feast[64];
 
   time(&now);
   ptime = localtime(&now);
@@ -253,7 +311,7 @@ do_today(fshm)
   sprintf(key2, "%02d/%d%c", ptime->tm_mon + 1, (ptime->tm_mday - 1) / 7 + 1, ptime->tm_wday + 'A');
   lunar_calendar(key3, &now, ptime);
 
-  today = fshm->today;
+  today = image.today;
   sprintf(today, "%s %.2s", key1, "日一二三四五六" + (ptime->tm_wday << 1));
 
   if (fp = fopen(FN_ETC_FEAST, "r"))
@@ -263,24 +321,63 @@ do_today(fshm)
       if (buf[0] == '#')
 	continue;
 
-      if (str = (char *) strchr(buf, ' '))
+      if ((ptr1 = strtok(buf, " \t\n")) && (ptr2 = strtok(NULL, " \t\n")))
       {
-	*str = '\0';
-	if (!strcmp(key1, buf) || !strcmp(key2, buf) || !strcmp(key3, buf))
+	if (!strcmp(ptr1, key1) || !strcmp(ptr1, key2) || !strcmp(ptr1, key3))
 	{
-	  /* 跳過空白分隔 */
-	  for (str++; *str && isspace(*str); str++)
-	    ;
+	  str_ncpy(today, ptr2, sizeof(image.today));
 
-	  str_ncpy(today, str, sizeof(fshm->today));
-	  if (str = (char *) strchr(today, '\n'))	/* 最後的 '\n' 不要 */
-	    *str = '\0';
+	  if (ptr3 = strtok(NULL, " \t\n"))
+		/* wake.080603: 將節日顯示畫面併至 gem/@ 下以便管理 */
+		sprintf(feast, "gem/@/@%s", ptr3);
+		/* Code old
+	    sprintf(feast, "etc/feasts/%s", ptr3);
+		*/
+	  if (!dashf(feast))
+	    feast[0] = '\0';
+
 	  break;
 	}
       }
     }
     fclose(fp);
   }
+
+  return feast;
+}
+
+
+/* wake.081227: 自訂分類顏色 */
+static void
+do_color(fshm)
+  FCACHE *fshm;
+{
+  int i;
+  char msg[STRLEN], *str;
+  FILE *fp;
+
+  i = 0;
+
+  if (fp = fopen(FN_ETC_CLASS, "r"))
+  {
+    for (; i < 99; i++)
+    {
+      if (!fgets(msg, STRLEN, fp))
+        break;
+      if (*msg == '#' || *msg == '\n')
+        continue;
+      if (str = strchr(msg, '\n'))
+        *str = '\0';
+      msg[BCLEN] = '\0';
+      strcpy(fshm->classtable[i], msg);
+      strcpy(fshm->colortable[i], msg + BCLEN + 1);
+    }
+
+    fclose(fp);
+  }
+
+  fshm->classtable[i][0] = '\0';
+  strcpy(fshm->colortable[i], "1;33"); /* 在 list 裡面找不到時的預設顏色 */
 }
 
 
@@ -288,15 +385,20 @@ int
 main()
 {
   int i;
-  char *fname, *str, fpath[64];
+  char *fname, *str, *feast, fpath[64];
   FCACHE *fshm;
 
   setgid(BBSGID);
   setuid(BBSUID);
   chdir(BBSHOME);
 
-  number = 0;		/* 計算有幾篇動態看板用的 */
-  tail = 0;
+  number = total = 0;
+
+  /* --------------------------------------------------- */
+  /* 今天節日					 	 */
+  /* --------------------------------------------------- */
+
+  feast = do_today();
 
   /* --------------------------------------------------- */
   /* 載入常用的文件及 help			 	 */
@@ -307,8 +409,15 @@ main()
 
   for (i = 0; str = list[i]; i++)
   {
-    strcpy(fname, str);
-    mirror(fpath, 0);
+    if (i >= FILM_OPENING0 && i <= FILM_OPENING2 && feast[0])	/* 若是節日，開頭畫面用該節日的畫面 */
+    {
+      mirror(feast, 0);
+    }
+    else
+    {
+      strcpy(fname, str);
+      mirror(fpath, 0);
+    }
   }
 
   /* itoc.註解: 到這裡以後，應該已有 FILM_MOVIE 篇 */
@@ -331,14 +440,16 @@ main()
   /* resolve shared memory				 */
   /* --------------------------------------------------- */
 
+  image.shot[0] = number;	/* 總共有幾片 */
+
   fshm = (FCACHE *) shm_new(FILMSHM_KEY, sizeof(FCACHE));
-  memcpy(fshm, &image, sizeof(image.shot) + tail);
-  /* Thor.980805: 再加上 shot的部分 */
-  fshm->shot[0] = number;	/* 總共有幾片 */
+  memcpy(fshm, &image, sizeof(FCACHE));
 
-  /* printf("%d/%d films, %d/%d bytes\n", number, MOVIE_MAX, tail, MOVIE_SIZE); */
+  /* printf("%d/%d films, %d/%d bytes\n", number, MOVIE_MAX, total, MOVIE_SIZE); */
 
-  do_today(fshm);
+  /* wake.081227: 自訂分類顏色 */
+  do_color(fshm);
 
   exit(0);
 }
+

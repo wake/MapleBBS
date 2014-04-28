@@ -31,7 +31,7 @@
 #define	PERM_13		0x00001000
 #define	PERM_14		0x00002000
 #define	PERM_15		0x00004000
-#define	PERM_16		0x00008000
+#define PERM_BBSLINK    0x00008000      /* 041104.Lacool:使用BBS任意門之權限 */
 
 #define PERM_DENYPOST	0x00010000	/* 17-24 : 禁制權限 */
 #define	PERM_DENYTALK	0x00020000
@@ -44,7 +44,7 @@
 
 #define PERM_BM		0x01000000	/* 25-32 : 管理權限 */
 #define PERM_SEECLOAK	0x02000000
-#define PERM_ADMIN3	0x04000000
+#define PERM_SUPERCLOAK 0x04000000      /* 040423.Lacool:增加紫隱權限 */
 #define PERM_REGISTRAR	0x08000000
 #define PERM_ACCOUNTS	0x10000000
 #define PERM_CHATROOM	0x20000000
@@ -58,7 +58,7 @@
 
 
 /* This is the default permission granted to all new accounts. */
-#define PERM_DEFAULT 	PERM_BASIC
+#define PERM_DEFAULT 	(PERM_BASIC | PERM_CHAT | PERM_PAGE | PERM_POST)
 
 /* 有 PERM_VALID 才可以保人進來本站註冊 */
 #ifdef HAVE_GUARANTOR
@@ -79,13 +79,11 @@
                   ├ 看板總管 PERM_BOARD : 可以修改看板設定、進入秘密及好友看板。
                   │
                   └ 全體站務 PERM_ALLADMIN : 以上四個總管，都有以下功能：
-                     上站來源設定、隱身術、紫隱、看見保密的精華區、
-                     不必定期認證、無須新手見習三天、multi-login、
-                     修改站上文件、更新系統、引言可以過多、
-                     寄信給全站使用者、信箱無上限。
+                     上站來源設定、隱身術、紫隱、不必定期認證、無須新手見習三天、multi-login、
+                     修改站上文件、更新系統、引言可以過多、寄信給全站使用者、信箱無上限。
 
   站長 PERM_SYSOP 除了以上所有功能，還擁有以下功能：
-  精華區建置絲路及資料、閱讀所有人的信件、得知所有人在看哪個板、開啟站務權限。
+  精華區建置資料、精華區看到加密目錄的標題、閱讀所有人的信件、得知所有人在看哪個板、開啟站務權限。
   
 #endif
 
@@ -135,7 +133,7 @@ static char *perm_tbl[NUMPERMS] =
   "保留",			/* PERM_13 */
   "保留",			/* PERM_14 */
   "保留",			/* PERM_15 */
-  "保留",			/* PERM_16 */
+  "BBS任意門",                  /* PERM_BBSLINK(16) */ /* 041104.小翊:增加BBS任意門之權限 */
 
   "禁止發表文章",		/* PERM_DENYPOST */
   "禁止 talk",			/* PERM_DENYTALK */
@@ -148,7 +146,7 @@ static char *perm_tbl[NUMPERMS] =
 
   "板主",			/* PERM_BM */
   "看見忍者",			/* PERM_SEECLOAK */
-  "保留",			/* PERM_ADMIN3 */
+  "紫隱",                       /* PERM_ADMIN3 */  /* 2004/04/23 小翊修改：增加紫隱權限 */
   "註冊總管",			/* PERM_REGISTRAR */
   "帳號總管",			/* PERM_ACCOUNTS */
   "聊天室總管",			/* PERM_CHATCLOAK */

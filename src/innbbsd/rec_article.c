@@ -22,7 +22,7 @@
 
 
 /* ----------------------------------------------------- */
-/* board：shm 部份須與 cache.c 相容                      */
+/* board：shm 部份須與 cache.c 相容			 */
 /* ----------------------------------------------------- */
 
 
@@ -146,6 +146,8 @@ static void
 bbspost_add(board, addr, nick)
   char *board, *addr, *nick;
 {
+  int cc;
+  char *str;
   char folder[64], fpath[64];
   HDR hdr;
   FILE *fp;
@@ -158,9 +160,27 @@ bbspost_add(board, addr, nick)
   {
     fprintf(fp, "發信人: %.50s 看板: %s\n", FROM, board);
     fprintf(fp, "標  題: %.70s\n", SUBJECT);
-    fprintf(fp, "發信站: %.27s (%.40s)\n\n", SITE, DATE);
+    if (SITE)
+      fprintf(fp, "發信站: %.27s (%.40s)\n\n", SITE, DATE);
+    else
+      fprintf(fp, "發信站: %.40s\n\n", DATE);
 
-    fprintf(fp, "%s", BODY);	/* chuan: header 跟 body 要空行格開 */
+    /* chuan: header 跟 body 要空行隔開 */
+
+    /* fprintf(fp, "%s", BODY); */
+
+    for (str = BODY; cc = *str; str++)
+    {
+      if (cc == '.')
+      {
+	/* for line beginning with a period, collapse the doubled period to a single one. */
+	if (str >= BODY + 2 && str[-1] == '.' && str[-2] == '\n')
+	  continue;
+      }
+
+      fputc(cc, fp);
+    }
+
     fclose(fp);
   }
 
@@ -174,7 +194,11 @@ bbspost_add(board, addr, nick)
   str_stamp(hdr.date, &datevalue);	/* 依 DATE: 欄位的日期，與 hdr.chrono 不同步 */
   str_ncpy(hdr.title, SUBJECT, sizeof(hdr.title));
 
+  /* wakefield.081212: 移除原本置底 */
+  /*
   rec_bot(folder, &hdr, sizeof(HDR));
+  */
+  rec_add(folder, &hdr, sizeof(HDR));
 
   update_btime(board);
 
@@ -206,7 +230,11 @@ move_post(hdr, board, filename)
 
   sprintf(post.title, "[cancel] %-60.60s", FROM);
 
+  /* wakefield.081212: 移除原本置底 */
+  /*
   rec_bot(folder, &post, sizeof(HDR));
+  */
+  rec_add(folder, &post, sizeof(HDR));
 }
 #endif
 
@@ -402,7 +430,7 @@ is_spam(board, addr, nick)
       compare = MSGID;
     else if (xmode & INN_SPAMBODY)
       compare = BODY;
-    else if (xmode & INN_SPAMSITE)
+    else if (xmode & INN_SPAMSITE && SITE)		/* SITE 可以是 NULL */
       compare = SITE;
     else if (xmode & INN_SPAMPOSTHOST && POSTHOST)	/* POSTHOST 可以是 NULL */
       compare = POSTHOST;
@@ -477,7 +505,8 @@ receive_article()
 	gb2b5(BODY);
 	gb2b5(FROM);
 	gb2b5(SUBJECT);
-	gb2b5(SITE);
+	if (SITE)
+	  gb2b5(SITE);
       }
 
       strcpy(poolx, FROM);

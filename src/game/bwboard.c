@@ -19,9 +19,6 @@
 
 extern char lastcmd[MAXLASTCMD][80];
 
-#ifdef EVERY_Z
-extern int vio_fd, holdon_fd;
-#endif
 
 enum
 {
@@ -61,7 +58,7 @@ static KeyFunc *mapTalk, *mapTurn;
 static int cmdCol, cmdPos;
 static char talkBuf[42] = "T";
 static char *cmdBuf = &talkBuf[1];
-extern KeyFunc Talk[];
+static KeyFunc Talk[];
 
 
 static void bw_printmsg();
@@ -337,7 +334,7 @@ enum
 };
 
 
-extern KeyFunc myRound[], yourRound[];
+static KeyFunc myRound[], yourRound[];
 
 static char *bw_icon[] = {"┼", "●", "○", "  "};	/* Empty, Black, White, Deny */
 
@@ -435,6 +432,9 @@ othEatable(Color, row, col, rowstep, colstep)
 }
 
 
+static int othAllow();
+
+
 static int
 othUpdate(Color, row, col)
   int Color, row, col;
@@ -471,7 +471,6 @@ othUpdate(Color, row, col)
 
   /* Thor.990329.註解: 下滿時 */
   {
-    static int othAllow();
     int my = myColor;		/* Thor.990331: 暫存myColor */
     int allowBlack, allowWhite;
     myColor = Black;
@@ -1246,7 +1245,7 @@ enum
 };
 
 
-extern KeyFunc myTurn[], yourTurn[];
+static KeyFunc myTurn[], yourTurn[];
 
 static int sideline;
 static int Totalch;		/* 加速用 :p */
@@ -2279,13 +2278,11 @@ main_board(sock, later)
       /* Thor.980731: 暫存 mateid, 因為出去時可能會用掉 mateid */
       strcpy(buf, cutmp->mateid);
 
-      holdon_fd = vio_fd;	/* Thor.980727: 暫存 vio_fd */
-      vio_fd = 0;
+      vio_save();	/* Thor.980727: 暫存 vio_fd */
       vs_save(slt);
       every_Z(0);
       vs_restore(slt);
-      vio_fd = holdon_fd;	/* Thor.980727: 還原 vio_fd */
-      holdon_fd = 0;
+      vio_restore();	/* Thor.980727: 還原 vio_fd */
 
       /* Thor.980731: 還原 mateid, 因為出去時可能會用掉 mateid */
       strcpy(cutmp->mateid, buf);

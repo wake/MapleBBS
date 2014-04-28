@@ -27,7 +27,13 @@ typedef struct
   int xid;			/* reserved */
 
   char xname[32];		/* 檔案名稱 */
-  char owner[80];		/* 作者 (E-mail address) */
+
+  /* 081224.wake: 推文接文未讀顯示改法 ver.2 */
+
+  //char owner[80];    /* 作者 (E-mail address) */
+  char owner[76];      /* 作者 (E-mail address) */
+  time_t stamp;        /* 最近一次更改檔案的時間 */
+
   char nick[49];		/* 暱稱 */
   char score;			/* 文章評比分數 */
 
@@ -55,16 +61,19 @@ typedef struct
 #define POST_4		0x00000008
 #define POST_5		0x00000010
 #define POST_6		0x00000020
-#define POST_BOTTOM	0x00000040	/* 置底 */
+/*
+#define POST_BOTTOM	0x00000040	//* 置底 // wakefield.081212: 移除原本置底
+*/
 #define POST_DELETE	0x00000080	/* 標記待砍的 */
 #define	POST_INCOME	0x00000100	/* 轉信進來的 */
 #define	POST_10		0x00000200
 #define	POST_OUTGO	0x00000400	/* 須轉信出去 */
 #define	POST_RESTRICT	0x00000800	/* 限制級文章，須 manager/owner 才能看 */
 #define POST_RESERVED	0x00001000	/* 限制級文章，須 sysop 才能更改 */
-#define POST_14		0x00002000
+#define POST_BOTTOM1  0x00002000      /* 置底文章的正本 */ /* wakefield.081212: 修改為另一種置底結構 */
 #define POST_SCORE	0x00004000	/* 標記評分過的 */
-#define POST_16		0x00008000
+#define POST_BOTTOM2  0x00008000      /* 置底文章的謄本 */ /* wakefield.081212: 修改為另一種置底結構 */
+#define POST_BOTTOM   (POST_BOTTOM1 | POST_BOTTOM2)  /* wakefield.081212: 修改為另一種置底結構 */
 
 
 /* ----------------------------------------------------- */
@@ -101,6 +110,8 @@ typedef struct
 
 #define	GEM_FOLDER	0x00010000	/* folder / article */
 #define	GEM_BOARD	0x00020000	/* 看板精華區 */
+#define GEM_19		0x00040000
+#define GEM_LINE	0x00080000	/* 分隔線 */
 
 
 /* ----------------------------------------------------- */
